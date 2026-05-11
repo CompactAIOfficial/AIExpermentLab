@@ -157,6 +157,10 @@ You can pass any comma-separated list of `yfinance` tickers to `--tickers`
 concatenation of per-ticker normalized series, then evaluated on each ticker
 independently with its own normalizer.
 
+**Benchmark is blind**: the model receives only the last `seq_len` training days
+as a seed, then predicts the entire test window autoregressively — it never sees
+the actual test prices. This matches real-world deployment constraints.
+
 See [docs/USAGE.md](docs/USAGE.md) for full options, ticker swapping, and how to read the
 benchmark output. Architecture notes live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -178,18 +182,25 @@ A running journal of every experiment. Newest entries on top.
 * Stood up the smallest plausible causal transformer (RMSNorm + SwiGLU + sinusoidal pos enc, 82,433 params).
 * Task: next-day close prediction. Train 2024-01-01..2024-12-31, benchmark 2025-01-01..2026-01-01.
 * One model, trained jointly on per-ticker normalized closes; benchmarked per-ticker.
+* **Blind autoregressive evaluation**: the model is seeded with the last 32 days of
+  training data, then rolls out step-by-step feeding only its own predictions.
+  It never sees the actual test prices — just like a real deployment.
 * CPU-only training: 30 epochs in ~3 seconds total on a laptop.
-* Results on the 2025–2026 hold-out:
+* Results on the 2025–2026 hold-out (blind):
 
-  | Ticker | n   | MAPE   | DirAcc | skill_vs_naive_rmse |
-  |--------|-----|--------|--------|---------------------|
-  | AAPL   | 218 | 1.56%  | 0.514  | -0.21               |
-  | NVDA   | 218 | 3.52%  | 0.528  | -1.13               |
+  | Ticker | n   | MAPE    | DirAcc | skill_vs_naive_rmse |
+  |--------|-----|---------|--------|---------------------|
+  | AAPL   | 250 | 17.03%  | 0.336  | -0.31               |
+  | NVDA   | 250 | 26.66%  | 0.472  | -0.65               |
 
+* MAPE is high because autoregressive error compounds — the model must predict
+  250 steps from its own (increasingly drifting) output. The earlier non-blind
+  one-step-ahead metric (~1.5%) was misleadingly optimistic.
 * Naive last-value still wins on RMSE, which is expected for a tiny model on
   near-random-walk daily closes. The point of this run is the pipeline, not the alpha.
 * Plots: `runs/Glint_AAPL_NVDA/plots/{AAPL,NVDA}_pred_vs_actual.png`.
-* Verdict: pipeline lives, multi-ticker works. Next up: pick the first feature off the backlog and start ablating.
+* Verdict: pipeline lives, blind evaluation is honest, multi-ticker works.
+  Next up: pick the first feature off the backlog and start ablating.
 
 ### Day 0, repo bootstrap
 
