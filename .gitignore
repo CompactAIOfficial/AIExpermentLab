@@ -5,5 +5,5 @@ __pycache__/
 venv/
 .env
 lab/data/_cache/
-runs/_*
+runs/
 .DS_Store
