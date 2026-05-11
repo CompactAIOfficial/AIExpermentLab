@@ -1,8 +1,10 @@
 import os
+from typing import Dict, List, Tuple
+
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import ConcatDataset, Dataset
 
 from ..config import DataConfig
 
@@ -60,19 +62,39 @@ class Normalizer:
     def inverse(self, x: np.ndarray) -> np.ndarray:
         return x * self.std + self.mean
 
+    def to_dict(self) -> dict:
+        return {"mean": self.mean, "std": self.std}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Normalizer":
+        n = cls()
+        n.mean = float(d["mean"])
+        n.std = float(d["std"])
+        return n
+
+
+def _load_series(ticker: str, start: str, end: str, feature: str) -> Tuple[np.ndarray, pd.DatetimeIndex]:
+    df = fetch_prices(ticker, start, end)
+    return df[feature].values.astype(np.float32), df.index
+
 
 def build_datasets(cfg: DataConfig):
-    train_df = fetch_prices(cfg.ticker, cfg.train_start, cfg.train_end)
-    test_df = fetch_prices(cfg.ticker, cfg.test_start, cfg.test_end)
-
     feat = cfg.features[0]
-    train_raw = train_df[feat].values.astype(np.float32)
-    test_raw = test_df[feat].values.astype(np.float32)
+    train_sets: List[Dataset] = []
+    test_sets: Dict[str, WindowedSeries] = {}
+    test_dates: Dict[str, pd.DatetimeIndex] = {}
+    norms: Dict[str, Normalizer] = {}
 
-    norm = Normalizer().fit(train_raw)
-    train_n = norm.transform(train_raw)
-    test_n = norm.transform(test_raw)
+    for ticker in cfg.tickers:
+        train_raw, _ = _load_series(ticker, cfg.train_start, cfg.train_end, feat)
+        test_raw, test_idx = _load_series(ticker, cfg.test_start, cfg.test_end, feat)
 
-    train_ds = WindowedSeries(train_n, cfg.seq_len, cfg.horizon)
-    test_ds = WindowedSeries(test_n, cfg.seq_len, cfg.horizon)
-    return train_ds, test_ds, norm
+        norm = Normalizer().fit(train_raw)
+        norms[ticker] = norm
+
+        train_sets.append(WindowedSeries(norm.transform(train_raw), cfg.seq_len, cfg.horizon))
+        test_sets[ticker] = WindowedSeries(norm.transform(test_raw), cfg.seq_len, cfg.horizon)
+        test_dates[ticker] = test_idx
+
+    train_ds = ConcatDataset(train_sets) if len(train_sets) > 1 else train_sets[0]
+    return train_ds, test_sets, norms, test_dates

@@ -28,7 +28,7 @@ class TrainConfig:
 
 @dataclass
 class DataConfig:
-    ticker: str = "AAPL"
+    tickers: List[str] = field(default_factory=lambda: ["AAPL"])
     train_start: str = "2020-01-01"
     train_end: str = "2024-12-31"
     test_start: str = "2025-01-01"
