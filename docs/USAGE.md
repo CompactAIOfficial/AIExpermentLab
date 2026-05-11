@@ -14,22 +14,32 @@ Tested on Python 3.12 with PyTorch 2.10. CPU is enough for the default `Glint` s
 
 ## 2. Train
 
+Single ticker:
+
 ```bash
-python train.py --series Glint --ticker AAPL \
+python train.py --series Glint --tickers AAPL \
     --train-start 2024-01-01 --train-end 2024-12-31 \
     --test-start 2025-01-01 --test-end 2026-01-01 \
-    --epochs 30 --device cpu \
-    --output runs/Glint_AAPL
+    --epochs 30 --device cpu
 ```
 
-Output goes to `runs/Glint_AAPL/`:
+Multiple tickers (one model trained jointly):
+
+```bash
+python train.py --series Glint --tickers AAPL,NVDA \
+    --train-start 2024-01-01 --train-end 2024-12-31 \
+    --epochs 30
+```
+
+Output goes to `runs/<series>_<TICKERS>/`:
 
 ```
-runs/Glint_AAPL/
-├── model.pt        # best validation checkpoint
-├── history.json    # per-epoch loss curve
-├── data_cfg.json   # data config (so benchmark.py can rehydrate it)
-└── norm.json       # mean/std used to normalize the training series
+runs/Glint_AAPL_NVDA/
+├── model.pt          # best validation checkpoint
+├── history.json      # per-epoch loss curve
+├── data_cfg.json     # data config (so benchmark.py can rehydrate it)
+├── norms.json        # per-ticker mean/std used during training
+└── loss_curve.png    # train/val loss plot
 ```
 
 `yfinance` data is cached to `lab/data/_cache/` after the first download.
@@ -37,18 +47,30 @@ runs/Glint_AAPL/
 ## 3. Benchmark
 
 ```bash
-python benchmark.py --model runs/Glint_AAPL/model.pt
+python benchmark.py --model runs/Glint_AAPL_NVDA/model.pt
 ```
 
-Reuses the data config saved during training. Override the test window or ticker if you want
-to evaluate on something different:
+Reuses the data config saved during training. For each ticker it prints metrics and writes
+a `Predicted vs Actual` PNG:
+
+```
+runs/Glint_AAPL_NVDA/
+├── benchmark.json
+└── plots/
+    ├── AAPL_pred_vs_actual.png
+    └── NVDA_pred_vs_actual.png
+```
+
+Override the test window or evaluate a different set of tickers (must have been seen at
+training time, since each needs a fitted normalizer):
 
 ```bash
-python benchmark.py --model runs/Glint_AAPL/model.pt \
-    --ticker MSFT --test-start 2025-06-01 --test-end 2026-01-01
-```
+python benchmark.py --model runs/Glint_AAPL_NVDA/model.pt \
+    --tickers AAPL --test-start 2025-06-01 --test-end 2026-01-01
 
-The benchmark writes `runs/Glint_AAPL/benchmark.json` and prints a summary.
+# Skip plotting entirely
+python benchmark.py --model runs/Glint_AAPL_NVDA/model.pt --no-plot
+```
 
 ## 4. Reading the metrics
 
@@ -70,16 +92,16 @@ For a tiny model on a daily close series, `mape_pct` in the low single digits an
 | Flag | Default | Notes |
 |------|---------|-------|
 | `--series` | `Glint` | Picks a model size from `lab/config.py:SERIES`. |
-| `--ticker` | `AAPL` | Any symbol `yfinance` understands. |
+| `--tickers` | `AAPL` | Comma-separated `yfinance` symbols. |
 | `--train-start` / `--train-end` | `2024-01-01` / `2024-12-31` | Training window. |
 | `--test-start` / `--test-end` | `2025-01-01` / `2026-01-01` | Saved into the run for later benchmarking. |
 | `--seq-len` | `32` | Number of past days fed into the model. |
 | `--horizon` | `1` | Days ahead to predict. |
-| `--epochs` | `20` | Training epochs. |
+| `--epochs` | `30` | Training epochs. |
 | `--batch-size` | `32` | |
 | `--lr` | `1e-3` | AdamW learning rate. |
 | `--device` | `cpu` | Use `cuda` if you have it. |
-| `--output` | `runs/<series>_<ticker>` | Run directory. |
+| `--output` | `runs/<series>_<tickers>` | Run directory. |
 | `--seed` | `42` | RNG seed. |
 
 ### `benchmark.py`
@@ -87,17 +109,19 @@ For a tiny model on a daily close series, `mape_pct` in the low single digits an
 | Flag | Default | Notes |
 |------|---------|-------|
 | `--model` | _required_ | Path to `model.pt`. |
-| `--run-dir` | dirname of `--model` | Where to read `data_cfg.json` and `norm.json` from. |
+| `--run-dir` | dirname of `--model` | Where to read `data_cfg.json` and `norms.json` from. |
 | `--device` | `cpu` | |
-| `--ticker` | from run config | Override the symbol. |
+| `--tickers` | from run config | Comma-separated override; each must have a normalizer in `norms.json`. |
 | `--test-start` / `--test-end` | from run config | Override the test window. |
+| `--no-plot` | off | Skip writing per-ticker PNGs. |
 
 ## 6. Quick sanity test
 
 ```bash
-python train.py --epochs 2 --output runs/_smoke
+python train.py --tickers AAPL --epochs 2 --output runs/_smoke
 python benchmark.py --model runs/_smoke/model.pt
 rm -rf runs/_smoke
 ```
 
-If both commands exit zero and `benchmark.json` contains numeric metrics, the install is good.
+If both commands exit zero, `benchmark.json` contains numeric metrics, and a PNG appears
+under `runs/_smoke/plots/`, the install is good.

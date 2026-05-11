@@ -9,10 +9,11 @@ AIExpermentLab/
 ├── train.py                  CLI entrypoint, no logic of its own.
 ├── benchmark.py              CLI entrypoint, runs evaluate() on a saved checkpoint.
 ├── lab/
-│   ├── config.py             ModelConfig, TrainConfig, DataConfig, SERIES presets.
+│   ├── config.py             ModelConfig, TrainConfig, DataConfig (multi-ticker), SERIES presets.
 │   ├── model.py              TinyForecaster + RMSNorm, CausalSelfAttention, SwiGLU, Block.
 │   ├── tokenizer.py          ValueBucketTokenizer (placeholder for future text/symbolic work).
 │   ├── training.py           train_model() loop, MSE + AdamW + grad clip.
+│   ├── plotting.py           plot_predictions() + plot_loss_curve() (matplotlib, Agg backend).
 │   ├── data/
 │   │   ├── pipeline.py       fetch_prices(), Normalizer, WindowedSeries, build_datasets().
 │   │   └── formats.py        log-return / sliding-window helpers used by experiments.
@@ -26,23 +27,34 @@ AIExpermentLab/
 ## Data flow
 
 ```diagram
-╭──────────────╮   ╭───────────────╮   ╭────────────────╮   ╭──────────────╮
-│ yfinance     │──▶│ Normalizer    │──▶│ WindowedSeries │──▶│ DataLoader   │
-│ (cached CSV) │   │ (z-score)     │   │ (seq_len, h)   │   │ (batched)    │
-╰──────────────╯   ╰───────────────╯   ╰────────────────╯   ╰──────┬───────╯
-                                                                   │
-                                                                   ▼
+ per ticker
+╭──────────────╮   ╭────────────────╮   ╭────────────────╮
+│ yfinance     │──▶│ Normalizer     │──▶│ WindowedSeries │──╮
+│ (cached CSV) │   │ (per-ticker μσ)│   │ (seq_len, h)   │  │
+╰──────────────╯   ╰────────────────╯   ╰────────────────╯  │
+                                                            ▼
+                                              ╭──────────────────────╮
+                                              │ ConcatDataset        │
+                                              │ (joint training set) │
+                                              ╰──────────┬───────────╯
+                                                         │
+                                                         ▼
                        ╭──────────────────────────────────────────────╮
                        │ TinyForecaster                               │
                        │   input_proj → +pos → N×Block → norm → head  │
                        ╰──────────────────────────────────────────────╯
-                                                                   │
-                                          ╭────────────────────────┴────────╮
-                                          │ Train: MSE → AdamW → clip       │
-                                          │ Bench: invert norm → MAE/RMSE/  │
-                                          │        MAPE/DirAcc/vs-naive     │
-                                          ╰─────────────────────────────────╯
+                                                         │
+                                ╭────────────────────────┴────────╮
+                                │ Train: MSE → AdamW → clip       │
+                                │ Bench: per-ticker invert norm → │
+                                │        MAE/RMSE/MAPE/DirAcc +   │
+                                │        PNG plots                │
+                                ╰─────────────────────────────────╯
 ```
+
+Each ticker is normalized with its **own** mean/std. The model sees a single
+mixed stream during training, but each evaluation ticker is de-normalized with
+the matching `Normalizer` so dollar metrics and plots stay on the right scale.
 
 ## Model
 

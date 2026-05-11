@@ -143,17 +143,22 @@ AIExpermentLab/
 ```bash
 pip install -r requirements.txt
 
-# Train the baseline on AAPL 2024 closes
-python train.py --series Glint --ticker AAPL \
+# Train one model jointly on AAPL + NVDA 2024 closes
+python train.py --series Glint --tickers AAPL,NVDA \
     --train-start 2024-01-01 --train-end 2024-12-31 \
     --epochs 30
 
-# Benchmark the trained model on 2025–2026
-python benchmark.py --model runs/Glint_AAPL/model.pt
+# Benchmark on 2025–2026 (per-ticker metrics + PNG plots)
+python benchmark.py --model runs/Glint_AAPL_NVDA/model.pt
 ```
 
+You can pass any comma-separated list of `yfinance` tickers to `--tickers`
+(e.g. `AAPL`, `AAPL,NVDA`, `AAPL,MSFT,GOOGL,NVDA`). The model is trained on the
+concatenation of per-ticker normalized series, then evaluated on each ticker
+independently with its own normalizer.
+
 See [docs/USAGE.md](docs/USAGE.md) for full options, ticker swapping, and how to read the
-benchmark output.
+benchmark output. Architecture notes live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Every feature graft will land behind a flag, for example:
 
@@ -168,17 +173,23 @@ python train.py --sleep-gate-cap 64
 
 A running journal of every experiment. Newest entries on top.
 
-### Day 1, vanilla baseline (Glint / AAPL)
+### Day 1, multi-ticker baseline (Glint / AAPL + NVDA)
 
 * Stood up the smallest plausible causal transformer (RMSNorm + SwiGLU + sinusoidal pos enc, 82,433 params).
 * Task: next-day close prediction. Train 2024-01-01..2024-12-31, benchmark 2025-01-01..2026-01-01.
-* CPU-only training: 30 epochs in ~2 seconds total on a laptop.
-* Result on AAPL 2025–2026:
-  * MAPE: **1.71%**
-  * Directional accuracy: **57.3%**
-  * Naive last-value baseline still wins on RMSE (skill_vs_naive_rmse = -0.33), which is expected
-    for a tiny model on a near-random-walk signal. The point of this run is the pipeline, not the alpha.
-* Verdict: pipeline lives. Next up: pick the first feature off the backlog and start ablating.
+* One model, trained jointly on per-ticker normalized closes; benchmarked per-ticker.
+* CPU-only training: 30 epochs in ~3 seconds total on a laptop.
+* Results on the 2025–2026 hold-out:
+
+  | Ticker | n   | MAPE   | DirAcc | skill_vs_naive_rmse |
+  |--------|-----|--------|--------|---------------------|
+  | AAPL   | 218 | 1.56%  | 0.514  | -0.21               |
+  | NVDA   | 218 | 3.52%  | 0.528  | -1.13               |
+
+* Naive last-value still wins on RMSE, which is expected for a tiny model on
+  near-random-walk daily closes. The point of this run is the pipeline, not the alpha.
+* Plots: `runs/Glint_AAPL_NVDA/plots/{AAPL,NVDA}_pred_vs_actual.png`.
+* Verdict: pipeline lives, multi-ticker works. Next up: pick the first feature off the backlog and start ablating.
 
 ### Day 0, repo bootstrap
 
