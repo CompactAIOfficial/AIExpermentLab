@@ -13,7 +13,7 @@ from lab.plotting import plot_predictions
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Blind autoregressive benchmark for TinyForecaster")
+    p = argparse.ArgumentParser(description="Benchmark TinyForecaster with configurable lookahead")
     p.add_argument("--model", required=True, help="path to model.pt")
     p.add_argument("--run-dir", default=None, help="override run dir for norms/data_cfg")
     p.add_argument("--device", default="cpu")
@@ -22,19 +22,47 @@ def parse_args():
     p.add_argument("--test-start", default=None)
     p.add_argument("--test-end", default=None)
     p.add_argument("--no-plot", action="store_true")
+    p.add_argument("--mode", default="blind",
+                   choices=["blind", "nonblind", "partial"],
+                   help="blind: never sees test prices.  "
+                        "nonblind: one-step-ahead (sees real prices).  "
+                        "partial: re-anchors every --partial-interval steps.")
+    p.add_argument("--partial-interval", type=int, default=126,
+                   help="Trading steps before a real-price anchor in 'partial' mode "
+                        "(default 126 ≈ half year).")
     return p.parse_args()
 
 
-def autoregressive_forecast(model, seed: np.ndarray, n_steps: int, device: str, seq_len: int) -> np.ndarray:
+MODE_LABELS = {
+    "blind": "BLIND (never sees test prices)",
+    "nonblind": "NON-BLIND (one-step-ahead, sees real prices)",
+    "partial": "PARTIAL (re-anchor every N steps)",
+}
+
+
+def autoregressive_forecast(
+    model, seed: np.ndarray, n_steps: int, device: str,
+    seq_len: int, mode: str, actuals: np.ndarray | None = None,
+    partial_interval: int = 126,
+) -> np.ndarray:
     model.eval()
     buf = torch.tensor(seed, dtype=torch.float32, device=device)
     preds = []
     with torch.no_grad():
-        for _ in range(n_steps):
+        for step in range(n_steps):
             x = buf[-seq_len:].view(1, seq_len, 1)
             p = float(model(x).squeeze().item())
             preds.append(p)
-            buf = torch.cat([buf, torch.tensor([p], device=device)])
+
+            if mode == "nonblind" and actuals is not None:
+                nxt = torch.tensor([actuals[step]], device=device)
+            elif mode == "partial" and actuals is not None and (step + 1) % partial_interval == 0:
+                nxt = torch.tensor([actuals[step]], device=device)
+            else:
+                nxt = torch.tensor([p], device=device)
+
+            buf = torch.cat([buf, nxt])
+
     return np.array(preds, dtype=np.float32)
 
 
@@ -49,9 +77,14 @@ def directional_accuracy_series(actual: np.ndarray, predicted: np.ndarray, last_
     return float((actual_dir[nz] == pred_dir[nz]).mean())
 
 
-def evaluate_blind(model, seed_n: np.ndarray, actual_n: np.ndarray, norm: Normalizer,
-                   seq_len: int, device: str):
-    pred_n = autoregressive_forecast(model, seed_n, len(actual_n), device, seq_len)
+def evaluate_forecast(
+    model, seed_n: np.ndarray, actual_n: np.ndarray, norm: Normalizer,
+    seq_len: int, device: str, mode: str, partial_interval: int,
+):
+    pred_n = autoregressive_forecast(
+        model, seed_n, len(actual_n), device, seq_len,
+        mode=mode, actuals=actual_n, partial_interval=partial_interval,
+    )
 
     pred_p = norm.inverse(pred_n)
     actual_p = norm.inverse(actual_n)
@@ -75,7 +108,8 @@ def evaluate_blind(model, seed_n: np.ndarray, actual_n: np.ndarray, norm: Normal
         "naive_flat_mae": naive_mae,
         "naive_flat_rmse": naive_rmse,
         "skill_vs_naive_rmse": float(1.0 - rmse / max(1e-8, naive_rmse)),
-        "blind": True,
+        "mode": mode,
+        "partial_interval": partial_interval if mode == "partial" else None,
     }
     return metrics, pred_p, actual_p
 
@@ -103,15 +137,16 @@ def main():
 
     all_metrics: Dict[str, dict] = {}
     plot_dir = os.path.join(run_dir, "plots")
+    label = MODE_LABELS[args.mode]
 
-    print(f"[bench] BLIND autoregressive forecast")
-    print(f"[bench] seed = last {data_cfg.seq_len} days of training; "
-          f"model never sees test prices.")
+    print(f"[bench] {label}")
+    print(f"[bench] seed = last {data_cfg.seq_len} days of training "
+          f"({data_cfg.train_end}) → predict {data_cfg.test_start} .. {data_cfg.test_end}")
 
     for ticker in data_cfg.tickers:
-        m, pred_p, actual_p = evaluate_blind(
+        m, pred_p, actual_p = evaluate_forecast(
             model, seeds[ticker], actuals[ticker], norms[ticker],
-            data_cfg.seq_len, args.device,
+            data_cfg.seq_len, args.device, args.mode, args.partial_interval,
         )
         all_metrics[ticker] = m
 
@@ -120,13 +155,14 @@ def main():
               f"skill_vs_naive_rmse={m['skill_vs_naive_rmse']:+.3f}")
 
         if not args.no_plot:
+            sfx = f"  ({data_cfg.test_start} → {data_cfg.test_end}, {args.mode.upper()})"
             png = plot_predictions(
                 dates=dates[ticker],
                 actual=actual_p,
                 predicted=pred_p,
                 ticker=ticker,
-                out_path=os.path.join(plot_dir, f"{ticker}_pred_vs_actual.png"),
-                title_suffix=f"  ({data_cfg.test_start} → {data_cfg.test_end}, BLIND)",
+                out_path=os.path.join(plot_dir, f"{ticker}_{args.mode}.png"),
+                title_suffix=sfx,
             )
             print(f"[bench] {ticker} plot -> {png}")
 

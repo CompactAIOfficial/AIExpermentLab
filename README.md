@@ -143,13 +143,15 @@ AIExpermentLab/
 ```bash
 pip install -r requirements.txt
 
-# Train one model jointly on AAPL + NVDA 2024 closes
+# Train on 3 years of history (2022–2024), then predict 2025–2026
 python train.py --series Glint --tickers AAPL,NVDA \
-    --train-start 2024-01-01 --train-end 2024-12-31 \
+    --train-start 2022-01-01 --train-end 2024-12-31 \
     --epochs 30
 
-# Benchmark on 2025–2026 (per-ticker metrics + PNG plots)
-python benchmark.py --model runs/Glint_AAPL_NVDA/model.pt
+# Benchmark on 2025–2026 (choose a mode)
+python benchmark.py --model runs/Glint_AAPL_NVDA/model.pt --mode blind      # never sees test prices
+python benchmark.py --model runs/Glint_AAPL_NVDA/model.pt --mode nonblind   # one-step-ahead
+python benchmark.py --model runs/Glint_AAPL_NVDA/model.pt --mode partial    # re-anchor every ~6mo
 ```
 
 You can pass any comma-separated list of `yfinance` tickers to `--tickers`
@@ -157,9 +159,10 @@ You can pass any comma-separated list of `yfinance` tickers to `--tickers`
 concatenation of per-ticker normalized series, then evaluated on each ticker
 independently with its own normalizer.
 
-**Benchmark is blind**: the model receives only the last `seq_len` training days
-as a seed, then predicts the entire test window autoregressively — it never sees
-the actual test prices. This matches real-world deployment constraints.
+**Training covers everything before the test window** (default 2022–2024).
+The benchmark seeds from the last `seq_len` real training days, then runs in the
+selected mode — blind (autoregressive), nonblind (one-step-ahead), or partial
+(re-anchored every N steps).
 
 See [docs/USAGE.md](docs/USAGE.md) for full options, ticker swapping, and how to read the
 benchmark output. Architecture notes live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -177,30 +180,39 @@ python train.py --sleep-gate-cap 64
 
 A running journal of every experiment. Newest entries on top.
 
-### Day 1, multi-ticker baseline (Glint / AAPL + NVDA)
+### Day 2, three benchmark modes + 3 years training
+
+* Training window widened to 3 years (2022–2024) so the model has enough
+  market history before predicting 2025–2026.
+* Three benchmark modes added to `benchmark.py --mode`:
+  - **blind**: seed from last `seq_len` training days, autoregressive rollout.
+  - **nonblind**: one-step-ahead (receives real previous price each step).
+  - **partial**: re-anchors with one real price every N steps (default 126 ≈ half year).
+* Same 82,433-param Glint model trained on AAPL + NVDA jointly.
+* Results:
+
+  | Mode | Ticker | n   | MAPE   | DirAcc | skill_vs_naive_rmse |
+  |------|--------|-----|--------|--------|---------------------|
+  | blind | AAPL  | 250 | 12.51% | 0.476  | -0.35               |
+  | blind | NVDA  | 250 | 37.14% | 0.464  | -1.34               |
+  | nonblind | AAPL | 250 | 1.57%  | 0.512  | +0.85               |
+  | nonblind | NVDA | 250 | 2.64%  | 0.440  | +0.85               |
+  | partial | AAPL | 250 | 11.95% | 0.480  | -0.30               |
+  | partial | NVDA | 250 | 26.37% | 0.464  | -0.61               |
+
+* Partial re-anchor helps NVDA noticeably (26% vs 37% blind) but barely moves
+  AAPL — the higher-volatility stock benefits more from a reality reset.
+* Nonblind one-step-ahead beats naive (positive skill) and shows the model *can*
+  learn something; the problem is pure autoregressive drift.
+* Plots: `runs/Glint_AAPL_NVDA/plots/{AAPL,NVDA}_{blind,nonblind,partial}.png`.
+
+### Day 1, multi-ticker + plotting + blind correction
 
 * Stood up the smallest plausible causal transformer (RMSNorm + SwiGLU + sinusoidal pos enc, 82,433 params).
-* Task: next-day close prediction. Train 2024-01-01..2024-12-31, benchmark 2025-01-01..2026-01-01.
-* One model, trained jointly on per-ticker normalized closes; benchmarked per-ticker.
-* **Blind autoregressive evaluation**: the model is seeded with the last 32 days of
-  training data, then rolls out step-by-step feeding only its own predictions.
-  It never sees the actual test prices — just like a real deployment.
-* CPU-only training: 30 epochs in ~3 seconds total on a laptop.
-* Results on the 2025–2026 hold-out (blind):
-
-  | Ticker | n   | MAPE    | DirAcc | skill_vs_naive_rmse |
-  |--------|-----|---------|--------|---------------------|
-  | AAPL   | 250 | 17.03%  | 0.336  | -0.31               |
-  | NVDA   | 250 | 26.66%  | 0.472  | -0.65               |
-
-* MAPE is high because autoregressive error compounds — the model must predict
-  250 steps from its own (increasingly drifting) output. The earlier non-blind
-  one-step-ahead metric (~1.5%) was misleadingly optimistic.
-* Naive last-value still wins on RMSE, which is expected for a tiny model on
-  near-random-walk daily closes. The point of this run is the pipeline, not the alpha.
-* Plots: `runs/Glint_AAPL_NVDA/plots/{AAPL,NVDA}_pred_vs_actual.png`.
-* Verdict: pipeline lives, blind evaluation is honest, multi-ticker works.
-  Next up: pick the first feature off the backlog and start ablating.
+* Task: next-day close prediction. Train on 2024, benchmark 2025–2026.
+* Multi-ticker support (--tickers), per-ticker normalizers, prediction-vs-actual plots.
+* Corrected benchmark from one-step-ahead to blind autoregressive rollout.
+* Plots: `runs/Glint_AAPL_NVDA/plots/{AAPL,NVDA}_pred_vs_actual.png` (superseded by Day 2).
 
 ### Day 0, repo bootstrap
 

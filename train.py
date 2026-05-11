@@ -17,7 +17,7 @@ def parse_args():
     p.add_argument("--series", default="Glint", choices=list(SERIES.keys()))
     p.add_argument("--tickers", default="AAPL",
                    help="Comma-separated symbols, e.g. AAPL,NVDA")
-    p.add_argument("--train-start", default="2024-01-01")
+    p.add_argument("--train-start", default="2022-01-01")
     p.add_argument("--train-end", default="2024-12-31")
     p.add_argument("--test-start", default="2025-01-01")
     p.add_argument("--test-end", default="2026-01-01")

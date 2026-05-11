@@ -14,11 +14,14 @@ Tested on Python 3.12 with PyTorch 2.10. CPU is enough for the default `Glint` s
 
 ## 2. Train
 
+By default the model trains on **3 years of data** (2022–2024) before
+predicting 2025–2026, so it has enough market history to learn from.
+
 Single ticker:
 
 ```bash
 python train.py --series Glint --tickers AAPL \
-    --train-start 2024-01-01 --train-end 2024-12-31 \
+    --train-start 2022-01-01 --train-end 2024-12-31 \
     --test-start 2025-01-01 --test-end 2026-01-01 \
     --epochs 30 --device cpu
 ```
@@ -27,7 +30,7 @@ Multiple tickers (one model trained jointly):
 
 ```bash
 python train.py --series Glint --tickers AAPL,NVDA \
-    --train-start 2024-01-01 --train-end 2024-12-31 \
+    --train-start 2022-01-01 --train-end 2024-12-31 \
     --epochs 30
 ```
 
@@ -46,8 +49,51 @@ runs/Glint_AAPL_NVDA/
 
 ## 3. Benchmark
 
+Three forecast modes control how much real data the model sees during evaluation:
+
+| Mode | What happens |
+|------|-------------|
+| `blind` (default) | Seed with last `seq_len` training days, then autoregressive — the model never sees test prices. |
+| `nonblind` | One-step-ahead: at every step the model receives the *real* previous price, so errors don't compound. |
+| `partial` | Like blind, but every `--partial-interval` steps (default 126 ≈ half a trading year) the model gets one real price to re-anchor. |
+
 ```bash
-python benchmark.py --model runs/Glint_AAPL_NVDA/model.pt
+# Blind (default) — same as omitting --mode
+python benchmark.py --model runs/Glint_AAPL_NVDA/model.pt --mode blind
+
+# Non-blind one-step-ahead
+python benchmark.py --model runs/Glint_AAPL_NVDA/model.pt --mode nonblind
+
+# Partial: re-anchor every half year
+python benchmark.py --model runs/Glint_AAPL_NVDA/model.pt --mode partial
+
+# Custom re-anchor interval (every 63 steps ≈ 3 months)
+python benchmark.py --model runs/Glint_AAPL_NVDA/model.pt --mode partial --partial-interval 63
+```
+
+Each mode produces per-ticker metrics and a PNG:
+
+```bash
+runs/Glint_AAPL_NVDA/
+├── benchmark.json
+└── plots/
+    ├── AAPL_blind.png
+    ├── AAPL_nonblind.png
+    ├── AAPL_partial.png
+    ├── NVDA_blind.png
+    ├── NVDA_nonblind.png
+    └── NVDA_partial.png
+```
+
+Override the test window or evaluate a different set of tickers (must have been seen at
+training time, since each needs a fitted normalizer):
+
+```bash
+python benchmark.py --model runs/Glint_AAPL_NVDA/model.pt \
+    --tickers AAPL --test-start 2025-06-01 --test-end 2026-01-01
+
+# Skip plotting entirely
+python benchmark.py --model runs/Glint_AAPL_NVDA/model.pt --no-plot
 ```
 
 Reuses the data config saved during training. For each ticker it prints metrics and writes
@@ -114,14 +160,21 @@ For a tiny model on a daily close series, `mape_pct` in the low single digits an
 | `--tickers` | from run config | Comma-separated override; each must have a normalizer in `norms.json`. |
 | `--test-start` / `--test-end` | from run config | Override the test window. |
 | `--no-plot` | off | Skip writing per-ticker PNGs. |
+| `--mode` | `blind` | Forecast mode: `blind`, `nonblind`, or `partial`. |
+| `--partial-interval` | `126` | Steps before a real-price anchor in `partial` mode (~126 trading days = half year). |
 
 ## 6. Quick sanity test
 
 ```bash
-python train.py --tickers AAPL --epochs 2 --output runs/_smoke
-python benchmark.py --model runs/_smoke/model.pt
+# Short train window so it finishes fast
+python train.py --tickers AAPL --epochs 2 --train-start 2024-06-01 --train-end 2024-12-31 \
+    --output runs/_smoke
+
+# Test all three modes
+python benchmark.py --model runs/_smoke/model.pt --mode blind --no-plot
+python benchmark.py --model runs/_smoke/model.pt --mode nonblind --no-plot
+python benchmark.py --model runs/_smoke/model.pt --mode partial --no-plot
 rm -rf runs/_smoke
 ```
 
-If both commands exit zero, `benchmark.json` contains numeric metrics, and a PNG appears
-under `runs/_smoke/plots/`, the install is good.
+If all three exit zero, `benchmark.json` contains numeric metrics, and the install is good.
