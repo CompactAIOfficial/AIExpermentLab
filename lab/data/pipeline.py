@@ -98,3 +98,30 @@ def build_datasets(cfg: DataConfig):
 
     train_ds = ConcatDataset(train_sets) if len(train_sets) > 1 else train_sets[0]
     return train_ds, test_sets, norms, test_dates
+
+
+def build_blind_test(cfg: DataConfig):
+    feat = cfg.features[0]
+    seeds: Dict[str, np.ndarray] = {}
+    actuals: Dict[str, np.ndarray] = {}
+    dates: Dict[str, pd.DatetimeIndex] = {}
+    norms: Dict[str, Normalizer] = {}
+
+    for ticker in cfg.tickers:
+        train_raw, _ = _load_series(ticker, cfg.train_start, cfg.train_end, feat)
+        test_raw, test_idx = _load_series(ticker, cfg.test_start, cfg.test_end, feat)
+
+        if len(train_raw) < cfg.seq_len:
+            raise RuntimeError(
+                f"{ticker}: training window only has {len(train_raw)} rows, "
+                f"need at least seq_len={cfg.seq_len} for the seed."
+            )
+
+        norm = Normalizer().fit(train_raw)
+        norms[ticker] = norm
+
+        seeds[ticker] = norm.transform(train_raw)[-cfg.seq_len:]
+        actuals[ticker] = norm.transform(test_raw)
+        dates[ticker] = test_idx
+
+    return seeds, actuals, norms, dates
