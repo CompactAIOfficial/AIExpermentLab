@@ -6,10 +6,9 @@
 
 **Open source training code for every weird idea I have decided to gather, bolt on, and benchmark.**
 
-[![HuggingFace](https://img.shields.io/badge/🤗_HuggingFace-CompactAI--O-yellow?style=for-the-badge)](https://huggingface.co/CompactAI-O)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support_the_Lab-FF5E5B?style=for-the-badge&logo=kofi&logoColor=white)](https://ko-fi.com/compactai)
 [![License](https://img.shields.io/badge/License-AGPL_V3-blue?style=for-the-badge)](#license)
-[![Status](https://img.shields.io/badge/Status-Day_Zero-orange?style=for-the-badge)](#progress-log)
+[![Status](https://img.shields.io/badge/Status-Day_1-orange?style=for-the-badge)](#progress-log)
 
 </div>
 
@@ -37,10 +36,15 @@ Every experiment lives in the open. Every flop, every win, every "huh, that was 
 ## The Plan
 
 1. Stand up a vanilla LLaMA-style transformer at the smallest reasonable scale (target under 1M params for the first run).
-2. Train it. Benchmark it. Publish the checkpoint.
+2. Train it. Benchmark it.
 3. Pick one experimental component from the [feature backlog](#feature-backlog), graft it on, retrain, rebenchmark.
 4. If it helps, keep it. If it hurts, document why and move on.
-5. Repeat until the model is too big to call "tiny" anymore, then start a new size class.
+5. Repeat.
+
+The first baseline lives on a tiny, well-defined task: **predict the next-day closing price of a stock**.
+Train on 2024 prices, benchmark on 2025–2026. The architecture is a generic causal transformer
+with no domain-specific tricks, so the same code can later be retargeted at text or any other
+1-D sequence with only the input/output projections changed.
 
 ---
 
@@ -113,21 +117,7 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 
 ---
 
-## Target Series
-
-Three rough size classes inherited from the old config, with parameter budgets to defend against scope creep.
-
-| Series | Target params | First milestone |
-|--------|---------------|-----------------|
-| `Glint` | under 1M | vanilla baseline → first feature graft |
-| `Shard` | around 50M | unlocked once Glint stabilizes |
-| `Prism` | around 100M | unlocked once Shard stabilizes |
-
-The published model lineage on HuggingFace ([CompactAI-O](https://huggingface.co/CompactAI-O)) will continue
-
----
-
-## Repository Layout (planned)
+## Repository Layout
 
 ```diagram
 AIExpermentLab/
@@ -148,27 +138,28 @@ AIExpermentLab/
 
 ---
 
-## Quickstart (placeholder)
-
-The training script does not exist yet. Day 1 work is to land the vanilla baseline. Once it is in:
+## Quickstart
 
 ```bash
-# Pretrain the smallest baseline
-python train.py --series Glint
+pip install -r requirements.txt
 
-# Resume from a checkpoint (auto-detects latest step)
-python train.py --series Glint --output runs/Glint
+# Train the baseline on AAPL 2024 closes
+python train.py --series Glint --ticker AAPL \
+    --train-start 2024-01-01 --train-end 2024-12-31 \
+    --epochs 30
 
-# Run the eval suite
-python benchmark.py --model runs/Glint/model.pt
+# Benchmark the trained model on 2025–2026
+python benchmark.py --model runs/Glint_AAPL/model.pt
 ```
+
+See [docs/USAGE.md](docs/USAGE.md) for full options, ticker swapping, and how to read the
+benchmark output.
 
 Every feature graft will land behind a flag, for example:
 
 ```bash
-python train.py --series Glint --recurrent-loops 4 --recurrent-lora-rank 8
-python train.py --series Glint --sleep-gate-cap 64
-python train.py --series Glint --distill --teacher Qwen/Qwen3.5-0.8B
+python train.py --recurrent-loops 4 --recurrent-lora-rank 8
+python train.py --sleep-gate-cap 64
 ```
 
 ---
@@ -177,12 +168,23 @@ python train.py --series Glint --distill --teacher Qwen/Qwen3.5-0.8B
 
 A running journal of every experiment. Newest entries on top.
 
+### Day 1, vanilla baseline (Glint / AAPL)
+
+* Stood up the smallest plausible causal transformer (RMSNorm + SwiGLU + sinusoidal pos enc, 82,433 params).
+* Task: next-day close prediction. Train 2024-01-01..2024-12-31, benchmark 2025-01-01..2026-01-01.
+* CPU-only training: 30 epochs in ~2 seconds total on a laptop.
+* Result on AAPL 2025–2026:
+  * MAPE: **1.71%**
+  * Directional accuracy: **57.3%**
+  * Naive last-value baseline still wins on RMSE (skill_vs_naive_rmse = -0.33), which is expected
+    for a tiny model on a near-random-walk signal. The point of this run is the pipeline, not the alpha.
+* Verdict: pipeline lives. Next up: pick the first feature off the backlog and start ablating.
+
 ### Day 0, repo bootstrap
 
 * Created the repository.
 * Audited the old MyTrainer codebase, extracted the full backlog of architecture and training experiments.
 * Wrote this README.
-* Next up: stand up the vanilla LLaMA-style baseline, publish the first checkpoint, run the first benchmark.
 
 <details>
 <summary>Format used for future entries</summary>
@@ -204,7 +206,7 @@ A running journal of every experiment. Newest entries on top.
 
 ## Why open source
 
-The MyTrainer codebase grew into a tangle of half-finished experiments behind a closed door. AIExpermentLab is the antidote. Every commit is public. Every checkpoint goes to HuggingFace. Every benchmark result is reproducible from the configs in this repo.
+The MyTrainer codebase grew into a tangle of half-finished experiments behind a closed door. AIExpermentLab is the antidote. Every commit is public. Every benchmark result is reproducible from the configs in this repo.
 
 If you want to fork, ablate, or argue about a specific experiment, open an issue or a PR. If you want to follow along, watch the [Progress Log](#progress-log).
 
@@ -212,7 +214,7 @@ If you want to fork, ablate, or argue about a specific experiment, open an issue
 
 ## Support the lab
 
-Training compute and HF storage cost money. If any of this is useful to you, a coffee keeps the GPUs warm.
+Training compute costs money. If any of this is useful to you, a coffee keeps the GPUs warm.
 
 <div align="center">
 
@@ -221,8 +223,6 @@ Training compute and HF storage cost money. If any of this is useful to you, a c
 **[ko-fi.com/compactai](https://ko-fi.com/compactai)**
 
 </div>
-
-Models live at [huggingface.co/CompactAI-O](https://huggingface.co/CompactAI-O).
 
 ---
 
@@ -246,6 +246,6 @@ All bugs, regressions, and bad ideas are mine.
 
 <div align="center">
 
-*Built in public. Logged in public. Donate at [ko-fi.com/compactai](https://ko-fi.com/compactai).*
+*Built in public. Logged in public. [ko-fi.com/compactai](https://ko-fi.com/compactai).*
 
 </div>
