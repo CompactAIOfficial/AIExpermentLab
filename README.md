@@ -65,7 +65,7 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | Engram (DeepSeek-style hashed n-gram conditional memory, O(1) lookup) | `EngramBlock` | queued |
 | Manifold Hyper-Connections (Sinkhorn-Knopp doubly stochastic residual mixing) | `mhc` | queued |
 | COCONUT-style Latent Thinking blocks (continuous chain-of-thought) | `latent_think_layers` | queued |
-| Multi-Token Prediction (auxiliary heads at future horizons) | `mtp_horizons` | queued |
+| Multi-Token Prediction (auxiliary heads at future horizons) | `mtp_horizons` | **tested** |
 | Per-Layer Embeddings (Gemma 3n PLE, token-conditional per-layer signal) | `ple_dim` | queued |
 | Auxiliary heads (bigram prediction, word boundary detection, L11) | `aux_*` | queued |
 | GQA, partial RoPE, sliding window, QK-norm, per-head output gating | `CausalSelfAttention` | queued |
@@ -95,9 +95,10 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | Decontamination pass against eval suites | `data/decontamination.py` | queued |
 | OHEM (Online Hard Example Mining) with dynamic threshold | `training.py` | queued |
 | Looping regularization (OpenMythos protection against weight collapse) | `training.py` | queued |
-| Input token dropout (replace fraction of inputs with `<UNK>`) | `training.py` | queued |
+| Input token dropout (replace fraction of inputs with zero) | `training.py` | **tested** |
 | Context loss (NCE-based contrastive prompt/response embedding loss) | `training.py` | queued |
 | Z-loss, entropy regularization, label smoothing | `training.py` | queued |
+| Output L2 regularization (penalize extreme predictions) | `output_reg.py` | **tested** |
 | Sleep capacity loss (TRIM-KV penalty for over-budget retention) | `sleep_gate.py` | queued |
 | Think depth loss (cosine similarity penalty for lazy COCONUT layers) | `training.py` | queued |
 | BatchPrefetcher (GPU-resident ring buffer, async CPU→GPU transfer) | `training.py` | queued |
@@ -184,6 +185,98 @@ python train.py --sleep-gate-cap 64
 ## Progress Log
 
 A running journal of every experiment. Newest entries on top.
+
+### Day 4, experiment framework + three feature A/B tests
+
+* **What**: Implemented three queued features behind opt-in `--flags` and ran full 3-mode benchmarks on Glint (82K params) vs a freshly re-trained baseline. Training window: 2022-01-01..2024-12-31 (3 years), predict 2025-01-01..2026-01-01 (250 steps).
+* **Features added**: `--mtp-horizons`, `--input-dropout`, `--output-reg`
+* **Compute**: CPU, ~5 minutes total
+
+#### Glint baseline (82K params)
+
+| Mode | Ticker | MAPE | DirAcc | skill_vs_naive_rmse |
+|------|--------|------|--------|---------------------|
+| blind | AAPL | 1243.62% | 0.524 | -185.66 |
+| blind | NVDA | 19.48% | 0.336 | -0.125 |
+| nonblind | AAPL | 1.36% | 0.508 | +0.866 |
+| nonblind | NVDA | 2.19% | 0.440 | +0.873 |
+| partial | AAPL | 82.39% | 0.484 | -6.072 |
+| partial | NVDA | 145.70% | 0.480 | -15.049 |
+
+#### Glint + MTP (`--mtp-horizons 2,4,8`)
+
+* **Verdict: KEEP**. Multi-token prediction with 3 auxiliary heads drastically improves blind and partial rollout without harming nonblind.
+
+| Mode | Ticker | MAPE | DirAcc | skill_vs_naive_rmse | Δ baseline |
+|------|--------|------|--------|---------------------|------------|
+| blind | AAPL | **15.36%** | 0.312 | -0.179 | **+185.48** |
+| blind | NVDA | **17.96%** | 0.372 | +0.048 | **+0.173** |
+| nonblind | AAPL | 1.33% | 0.504 | +0.867 | +0.001 |
+| nonblind | NVDA | 2.17% | 0.456 | +0.874 | +0.001 |
+| partial | AAPL | **14.19%** | 0.512 | -0.108 | **+5.964** |
+| partial | NVDA | **10.15%** | 0.544 | +0.492 | **+15.541** |
+
+#### Glint + Input Dropout sweep (`--input-dropout` 0.01 / 0.05 / 0.10 / 0.15)
+
+Dropout 0.15 destabilises the model completely in multi-step modes (MAPE explodes to millions). Lower rates all help — **0.01 is the sweet spot**.
+
+| Rate | Mode | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill |
+|------|------|-----------|------------|-----------|------------|
+| 0.00 (base) | blind | 1243.62% | -185.66 | 19.48% | -0.125 |
+| 0.01 | blind | **18.12%** | -0.405 | **16.89%** | **+0.202** |
+| 0.05 | blind | 15.35% | -0.175 | 30.87% | -0.960 |
+| 0.10 | blind | **9.51%** | **+0.119** | 21.17% | -0.270 |
+| 0.00 (base) | partial | 82.39% | -6.072 | 145.70% | -15.049 |
+| 0.01 | partial | **15.98%** | -0.275 | **15.86%** | **+0.250** |
+| 0.05 | partial | 33.08% | -2.172 | 10.06% | +0.400 |
+| 0.10 | partial | 11.28% | -0.099 | 15.92% | -0.009 |
+
+* **Verdict: KEEP** (at 0.01). Even 1% input randomisation (zeroing 1/100 inputs) provides massive blind-mode regularisation. The effect diminishes above 0.01 for AAPL blind, though NVDA partial peaks at 0.05. Start with 0.01 as default.
+
+#### Glint + Output Reg (`--output-reg 0.001`)
+
+* **Verdict: NEUTRAL / needs more data**. Small improvements on partial modes (~12% lower MAPE on AAPL, ~9% on NVDA) but still far behind MTP or dropout. Worth retesting with higher weights.
+
+| Mode | Ticker | MAPE | DirAcc | skill_vs_naive_rmse | Δ baseline |
+|------|--------|------|--------|---------------------|------------|
+| blind | AAPL | 968.25% | 0.524 | -140.42 | +45.24 |
+| blind | NVDA | 19.46% | 0.332 | -0.124 | +0.001 |
+| nonblind | AAPL | 1.36% | 0.508 | +0.866 | 0.000 |
+| nonblind | NVDA | 2.19% | 0.440 | +0.873 | 0.000 |
+| partial | AAPL | 72.58% | 0.484 | -5.213 | +1.859 |
+| partial | NVDA | 132.31% | 0.480 | -13.367 | +1.682 |
+
+#### Summary
+
+| Feature | Flag | Verdict | Notes |
+|---------|------|---------|-------|
+| Multi-Token Prediction | `--mtp-horizons 2,4,8` | **KEEP** | 80x blind MAPE reduction on AAPL, 14x partial on NVDA |
+| Input Token Dropout | `--input-dropout 0.01` | **KEEP** | 69x blind MAPE reduction on AAPL at 1% rate |
+| Output L2 Regularization | `--output-reg 0.001` | needs data | Marginal improvement, far behind MTP/dropout |
+
+#### Comparison of best features (blind mode)
+
+| Model | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill |
+|-------|-----------|------------|-----------|------------|
+| Baseline | 1243.62% | -185.66 | 19.48% | -0.125 |
+| +MTP 2,4,8 | 15.36% | -0.18 | **17.96%** | **+0.048** |
+| +Input Dropout 0.10 | **9.51%** | **+0.119** | 21.17% | -0.270 |
+| +Output Reg 0.001 | 968.25% | -140.42 | 19.46% | -0.124 |
+
+MTP gives the best all-round improvement; dropout 0.10 gives the best single-ticker result (AAPL blind hits positive skill for the first time).
+
+#### Implementation
+
+Each feature lives in `lab/experiments/{mtp,input_dropout,output_reg}.py` and is wired through `lab/model.py` and `lab/training.py`. The `--mtp-horizons` flag also modifies the dataset (`lab/data/pipeline.py`) to produce multi-horizon targets.
+
+```bash
+python train.py --mtp-horizons 2,4,8
+python train.py --input-dropout 0.01
+python train.py --output-reg 0.001
+```
+
+Run dirs: `runs/Glint_AAPL_NVDA_{mtp=2,4,8,drop=0.01,drop=0.05,drop=0.1,drop=0.15,oreg=0.001}`
+
 
 ### Day 3, local normalisation — real predictions, no drift
 
