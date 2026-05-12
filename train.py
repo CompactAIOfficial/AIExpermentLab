@@ -37,6 +37,12 @@ def parse_args():
                    help="Replace fraction of input tokens with zero during training")
     p.add_argument("--output-reg", type=float, default=0.0,
                    help="L2 penalty weight on output predictions")
+    p.add_argument("--crowfeather", action="store_true",
+                   help="Crowfeather AdamW: eps=1e-20, beta2 ramps 0.95->0.97 post-warmup")
+    p.add_argument("--lr-schedule", default="cosine", choices=["cosine", "wsd"],
+                   help="LR schedule: cosine or warmup-stable-decay (WSD) with sqrt cooldown")
+    p.add_argument("--ema-decay", type=float, default=0.0,
+                   help="EMA decay rate for model weight averaging (0=disabled, typical 0.999-0.9999)")
     return p.parse_args()
 
 
@@ -82,6 +88,12 @@ def main():
         flags.append(f"drop={args.input_dropout}")
     if args.output_reg > 0:
         flags.append(f"oreg={args.output_reg}")
+    if args.crowfeather:
+        flags.append("crow")
+    if args.lr_schedule == "wsd":
+        flags.append("wsd")
+    if args.ema_decay > 0:
+        flags.append(f"ema={args.ema_decay}")
     suffix = "_" + "_".join(flags) if flags else ""
     out = out + suffix
 
@@ -102,6 +114,9 @@ def main():
         model_cfg, train_cfg, train_ds, out,
         input_dropout=args.input_dropout,
         output_reg=args.output_reg,
+        crowfeather=args.crowfeather,
+        lr_schedule=args.lr_schedule,
+        ema_decay=args.ema_decay,
     )
     plot_loss_curve(history, os.path.join(out, "loss_curve.png"))
 

@@ -31,6 +31,7 @@ def make_loaders(train_ds, cfg: TrainConfig):
 def train_model(
     model_cfg: ModelConfig, train_cfg: TrainConfig, train_ds, run_dir: str,
     input_dropout: float = 0.0, output_reg: float = 0.0, mtp_weight: float = 0.3,
+    crowfeather: bool = False, lr_schedule: str = "cosine", ema_decay: float = 0.0,
 ):
     os.makedirs(run_dir, exist_ok=True)
     set_seed(train_cfg.seed)
@@ -45,11 +46,23 @@ def train_model(
 
     has_mtp = bool(model_cfg.mtp_horizons)
 
+    if crowfeather:
+        opt.param_groups[0]["eps"] = 1e-20
+
+    ema = None
+    if ema_decay > 0:
+        from .experiments.ema import ModelEMA
+        ema = ModelEMA(model, decay=ema_decay)
+
     train_loader, val_loader = make_loaders(train_ds, train_cfg)
+    batches_per_epoch = len(train_loader)
+    warmup_steps = int(0.1 * train_cfg.epochs * batches_per_epoch)
+    total_steps = train_cfg.epochs * batches_per_epoch
 
     history = []
     best_val = float("inf")
     stalled = 0
+    global_step = 0
 
     for epoch in range(train_cfg.epochs):
         model.train()
@@ -65,6 +78,12 @@ def train_model(
             yb = yb.to(device)
 
             xb = apply_input_dropout(xb, input_dropout, training=True)
+
+            if lr_schedule == "wsd":
+                from .experiments.wsd_schedule import get_wsd_lr
+                opt.param_groups[0]["lr"] = get_wsd_lr(
+                    global_step, warmup_steps, total_steps, train_cfg.lr
+                )
 
             opt.zero_grad()
             out = model(xb)
@@ -87,9 +106,21 @@ def train_model(
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip)
             opt.step()
+
+            if crowfeather:
+                from .experiments.crowfeather import apply_crowfeather
+                apply_crowfeather(opt, warmup_steps, global_step)
+
+            if ema is not None:
+                ema.update(model)
+
             train_loss += loss.item() * xb.size(0)
             n += xb.size(0)
+            global_step += 1
         train_loss /= max(1, n)
+
+        if ema is not None:
+            saved = ema.swap(model)
 
         model.eval()
         val_loss = 0.0
@@ -111,6 +142,9 @@ def train_model(
                 nv += xb.size(0)
         val_loss /= max(1, nv)
 
+        if ema is not None:
+            model.load_state_dict(saved)
+
         dt = time.time() - t0
         history.append({"epoch": epoch, "train": train_loss, "val": val_loss, "sec": dt})
         print(f"epoch {epoch:3d}  train {train_loss:.5f}  val {val_loss:.5f}  ({dt:.1f}s)")
@@ -118,7 +152,10 @@ def train_model(
         if val_loss < best_val:
             best_val = val_loss
             stalled = 0
-            torch.save({"model": model.state_dict(), "cfg": model_cfg.__dict__}, os.path.join(run_dir, "model.pt"))
+            save_state = model.state_dict()
+            if ema is not None:
+                save_state = ema.state_dict()
+            torch.save({"model": save_state, "cfg": model_cfg.__dict__}, os.path.join(run_dir, "model.pt"))
         else:
             stalled += 1
             if stalled >= train_cfg.patience:
