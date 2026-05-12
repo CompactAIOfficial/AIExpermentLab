@@ -69,7 +69,7 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | Engram (DeepSeek-style hashed n-gram conditional memory, O(1) lookup) | `EngramBlock` | queued |
 | Manifold Hyper-Connections (Sinkhorn-Knopp doubly stochastic residual mixing) | `mhc` | queued |
 | COCONUT-style Latent Thinking blocks (continuous chain-of-thought) | `latent_think_layers` | queued |
-| Multi-Token Prediction (auxiliary heads at future horizons) | `mtp_horizons` | **tested — KEPT** |
+| Multi-Token Prediction (auxiliary heads at future horizons) | `lab/experiments/mtp.py` | **tested — KEPT** |
 | Per-Layer Embeddings (Gemma 3n PLE, token-conditional per-layer signal) | `ple_dim` | queued |
 | Auxiliary heads (bigram prediction, word boundary detection, L11) | `aux_*` | queued |
 | GQA, partial RoPE, sliding window, QK-norm, per-head output gating | `CausalSelfAttention` | queued |
@@ -99,10 +99,10 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | Decontamination pass against eval suites | `data/decontamination.py` | queued |
 | OHEM (Online Hard Example Mining) with dynamic threshold | `training.py` | queued |
 | Looping regularization (OpenMythos protection against weight collapse) | `training.py` | queued |
-| Input token dropout (replace fraction of inputs with zero) | `input_dropout.py` | **tested — KEPT** |
+| Input token dropout (replace fraction of inputs with zero) | `lab/experiments/input_dropout.py` | **tested — KEPT** |
 | Context loss (NCE-based contrastive prompt/response embedding loss) | `training.py` | queued |
 | Z-loss, entropy regularization, label smoothing | `training.py` | queued |
-| Output L2 regularization (penalize extreme predictions) | `output_reg.py` | **tested — DROPPED** |
+| Output L2 regularization (penalize extreme predictions) | `lab/experiments/output_reg.py` | **tested — DROPPED** |
 | Sleep capacity loss (TRIM-KV penalty for over-budget retention) | `sleep_gate.py` | queued |
 | Think depth loss (cosine similarity penalty for lazy COCONUT layers) | `training.py` | queued |
 | BatchPrefetcher (GPU-resident ring buffer, async CPU→GPU transfer) | `training.py` | queued |
