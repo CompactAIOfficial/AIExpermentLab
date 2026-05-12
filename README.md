@@ -2,7 +2,7 @@
 
 # AIExpermentLab
 
-### *"Well, here we are again."* GLaDOS, Portal 2
+### *"Well here we are again."* GLaDOS, Portal 2
 
 **Open source training code for every weird idea I have decided to gather, bolt on, and benchmark.**
 
