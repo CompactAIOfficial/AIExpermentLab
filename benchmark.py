@@ -8,17 +8,17 @@ import torch
 
 from lab.config import ModelConfig, DataConfig
 from lab.model import TinyForecaster
-from lab.data.pipeline import build_blind_test, Normalizer
+from lab.data.pipeline import build_blind_test
 from lab.plotting import plot_predictions
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="Benchmark TinyForecaster with configurable lookahead")
     p.add_argument("--model", required=True, help="path to model.pt")
-    p.add_argument("--run-dir", default=None, help="override run dir for norms/data_cfg")
+    p.add_argument("--run-dir", default=None, help="override run dir for data_cfg")
     p.add_argument("--device", default="cpu")
     p.add_argument("--tickers", default=None,
-                   help="Override tickers, comma-separated (e.g. AAPL,NVDA)")
+                   help="Override tickers comma-separated (e.g. AAPL,NVDA)")
     p.add_argument("--test-start", default=None)
     p.add_argument("--test-end", default=None)
     p.add_argument("--no-plot", action="store_true")
@@ -28,8 +28,7 @@ def parse_args():
                         "nonblind: one-step-ahead (sees real prices).  "
                         "partial: re-anchors every --partial-interval steps.")
     p.add_argument("--partial-interval", type=int, default=126,
-                   help="Trading steps before a real-price anchor in 'partial' mode "
-                        "(default 126 ≈ half year).")
+                   help="Steps before a real-price anchor in partial mode (default 126 ≈ half year).")
     return p.parse_args()
 
 
@@ -40,24 +39,39 @@ MODE_LABELS = {
 }
 
 
+def _normalize_window(window: np.ndarray) -> np.ndarray:
+    return (window - window.mean()) / (window.std() + 1e-8)
+
+
 def autoregressive_forecast(
-    model, seed: np.ndarray, n_steps: int, device: str,
-    seq_len: int, mode: str, actuals: np.ndarray | None = None,
+    model, seed_raw: np.ndarray, n_steps: int, device: str,
+    seq_len: int, mode: str, actuals_raw: np.ndarray | None = None,
     partial_interval: int = 126,
 ) -> np.ndarray:
+    """Autoregressive rollout with per-step local normalization.
+
+    The buffer holds **raw prices**.  At each step the last ``seq_len``
+    prices are locally z-scored before being fed to the model.  The
+    predicted normalised value is immediately de-normalised back to a raw
+    price and appended to the buffer.
+    """
     model.eval()
-    buf = torch.tensor(seed, dtype=torch.float32, device=device)
-    preds = []
+    buf = torch.tensor(seed_raw, dtype=torch.float32, device=device)
+    preds: list[float] = []
     with torch.no_grad():
         for step in range(n_steps):
-            x = buf[-seq_len:].view(1, seq_len, 1)
-            p = float(model(x).squeeze().item())
+            window = buf[-seq_len:]
+            w_mean = window.mean()
+            w_std = window.std() + 1e-8
+            x = ((window - w_mean) / w_std).view(1, seq_len, 1)
+            p_norm = float(model(x).squeeze().item())
+            p = p_norm * w_std.item() + w_mean.item()
             preds.append(p)
 
-            if mode == "nonblind" and actuals is not None:
-                nxt = torch.tensor([actuals[step]], device=device)
-            elif mode == "partial" and actuals is not None and (step + 1) % partial_interval == 0:
-                nxt = torch.tensor([actuals[step]], device=device)
+            if mode == "nonblind" and actuals_raw is not None:
+                nxt = torch.tensor([actuals_raw[step]], device=device)
+            elif mode == "partial" and actuals_raw is not None and (step + 1) % partial_interval == 0:
+                nxt = torch.tensor([actuals_raw[step]], device=device)
             else:
                 nxt = torch.tensor([p], device=device)
 
@@ -77,45 +91,26 @@ def directional_accuracy_series(actual: np.ndarray, predicted: np.ndarray, last_
     return float((actual_dir[nz] == pred_dir[nz]).mean())
 
 
-def _diffs_to_prices(diffs: np.ndarray, start_price: float) -> np.ndarray:
-    prices = np.empty(len(diffs), dtype=np.float32)
-    p = start_price
-    for i, d in enumerate(diffs):
-        p = p + d
-        prices[i] = p
-    return prices
-
-
 def evaluate_forecast(
-    model, seed_n: np.ndarray, actual_n: np.ndarray, norm: Normalizer,
+    model, seed_raw: np.ndarray, actual_raw: np.ndarray,
     seq_len: int, device: str, mode: str, partial_interval: int,
-    diff_mode: bool = False, last_train_price: float | None = None,
-    actual_raw_prices: np.ndarray | None = None,
 ):
-    pred_n = autoregressive_forecast(
-        model, seed_n, len(actual_n), device, seq_len,
-        mode=mode, actuals=actual_n, partial_interval=partial_interval,
+    pred_p = autoregressive_forecast(
+        model, seed_raw, len(actual_raw), device, seq_len,
+        mode=mode, actuals_raw=actual_raw if mode != "blind" else None,
+        partial_interval=partial_interval,
     )
 
-    if diff_mode:
-        pred_diffs = norm.inverse(pred_n)
-        actual_diffs = norm.inverse(actual_n)
-        pred_p = _diffs_to_prices(pred_diffs, float(last_train_price))
-        actual_p = actual_raw_prices if actual_raw_prices is not None else _diffs_to_prices(actual_diffs, float(last_train_price))
-        last_seed_p = float(last_train_price)
-    else:
-        pred_p = norm.inverse(pred_n)
-        actual_p = norm.inverse(actual_n)
-        last_seed_p = float(norm.inverse(seed_n[-1:])[0])
+    last_seed_p = float(seed_raw[-1])
 
-    mae = float(np.mean(np.abs(pred_p - actual_p)))
-    rmse = float(np.sqrt(np.mean((pred_p - actual_p) ** 2)))
-    mape = float(np.mean(np.abs((pred_p - actual_p) / np.maximum(1e-8, np.abs(actual_p)))) * 100.0)
-    da = directional_accuracy_series(actual_p, pred_p, last_seed_p)
+    mae = float(np.mean(np.abs(pred_p - actual_raw)))
+    rmse = float(np.sqrt(np.mean((pred_p - actual_raw) ** 2)))
+    mape = float(np.mean(np.abs((pred_p - actual_raw) / np.maximum(1e-8, np.abs(actual_raw)))) * 100.0)
+    da = directional_accuracy_series(actual_raw, pred_p, last_seed_p)
 
-    naive = np.full_like(actual_p, last_seed_p)
-    naive_mae = float(np.mean(np.abs(naive - actual_p)))
-    naive_rmse = float(np.sqrt(np.mean((naive - actual_p) ** 2)))
+    naive = np.full_like(actual_raw, last_seed_p)
+    naive_mae = float(np.mean(np.abs(naive - actual_raw)))
+    naive_rmse = float(np.sqrt(np.mean((naive - actual_raw) ** 2)))
 
     metrics = {
         "n_steps": int(len(pred_p)),
@@ -129,7 +124,7 @@ def evaluate_forecast(
         "mode": mode,
         "partial_interval": partial_interval if mode == "partial" else None,
     }
-    return metrics, pred_p, actual_p
+    return metrics, pred_p, actual_raw
 
 
 def main():
@@ -151,26 +146,20 @@ def main():
         data_dict["test_end"] = args.test_end
     data_cfg = DataConfig(**data_dict)
 
-    seeds, actuals_norm, norms, dates, last_train_prices, actual_raw_prices = (
-        build_blind_test(data_cfg)
-    )
+    seeds, actuals, dates = build_blind_test(data_cfg)
 
     all_metrics: Dict[str, dict] = {}
     plot_dir = os.path.join(run_dir, "plots")
     label = MODE_LABELS[args.mode]
-    dim = "diffs" if data_cfg.diff_mode else "prices"
 
-    print(f"[bench] {label}  (model trained on {dim})")
-    print(f"[bench] seed = last {data_cfg.seq_len} training {dim} "
+    print(f"[bench] {label}  (local-normalisation, raw prices)")
+    print(f"[bench] seed = last {data_cfg.seq_len} raw training prices "
           f"({data_cfg.train_end}) → predict {data_cfg.test_start} .. {data_cfg.test_end}")
 
     for ticker in data_cfg.tickers:
         m, pred_p, actual_p = evaluate_forecast(
-            model, seeds[ticker], actuals_norm[ticker], norms[ticker],
+            model, seeds[ticker], actuals[ticker],
             data_cfg.seq_len, args.device, args.mode, args.partial_interval,
-            diff_mode=data_cfg.diff_mode,
-            last_train_price=last_train_prices[ticker],
-            actual_raw_prices=actual_raw_prices[ticker],
         )
         all_metrics[ticker] = m
 

@@ -41,6 +41,7 @@ def train_model(model_cfg: ModelConfig, train_cfg: TrainConfig, train_ds, run_di
 
     history = []
     best_val = float("inf")
+    stalled = 0
 
     for epoch in range(train_cfg.epochs):
         model.train()
@@ -78,7 +79,13 @@ def train_model(model_cfg: ModelConfig, train_cfg: TrainConfig, train_ds, run_di
 
         if val_loss < best_val:
             best_val = val_loss
+            stalled = 0
             torch.save({"model": model.state_dict(), "cfg": model_cfg.__dict__}, os.path.join(run_dir, "model.pt"))
+        else:
+            stalled += 1
+            if stalled >= train_cfg.patience:
+                print(f"[train] early stop after {epoch+1} epochs (val no improvement for {train_cfg.patience})")
+                break
 
     with open(os.path.join(run_dir, "history.json"), "w") as f:
         json.dump(history, f, indent=2)

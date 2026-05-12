@@ -24,6 +24,7 @@ class TrainConfig:
     device: str = "cpu"
     seed: int = 42
     val_frac: float = 0.1
+    patience: int = 7
 
 
 @dataclass
