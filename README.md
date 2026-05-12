@@ -102,7 +102,7 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | Input token dropout (replace fraction of inputs with zero) | `lab/experiments/input_dropout.py` | **tested — KEPT** |
 | Context loss (NCE-based contrastive prompt/response embedding loss) | `training.py` | queued |
 | Z-loss, entropy regularization, label smoothing | `training.py` | queued |
-| Output L2 regularization (penalize extreme predictions) | `lab/experiments/output_reg.py` | **tested — DROPPED** |
+| Output L2 regularization (penalize extreme predictions) | `lab/experiments/output_reg.py` | **tested — KEPT (0.05–0.10)** |
 | Sleep capacity loss (TRIM-KV penalty for over-budget retention) | `sleep_gate.py` | queued |
 | Think depth loss (cosine similarity penalty for lazy COCONUT layers) | `training.py` | queued |
 | BatchPrefetcher (GPU-resident ring buffer, async CPU→GPU transfer) | `training.py` | queued |
@@ -229,19 +229,54 @@ This is the first Glint config to achieve **positive skill on AAPL in both blind
 - **MTP horizon count matters**: 4 heads (2,4,8,16) beats 3 heads (2,4,8) beats 2 heads (2,4). More horizons = stronger regularization.
 - **Dropout alone peaks at opposite ends**: 0.10 is best for AAPL (9.51%), 0.01 is best for NVDA (16.89%). No single rate dominates both.
 - **MTP + dropout can stack with the right rate**: MTP(2,4,8,16)+dropout 0.01 beats both MTP(2,4,8,16) alone AND dropout 0.01 alone on avg MAPE. The rate must be carefully tuned — 0.003/0.005/0.03 all performed worse than MTP alone.
-- **Output reg is a dead end**: No rate (0.0001, 0.0005, 0.001, 0.005) improved blind mode more than trivially. All output reg variants scored 379-1243% MAPE on AAPL blind.
+- **Output reg works at high rates (0.05–0.10)**: Earlier testing only checked 0.0001–0.005 (too low). A 2.5-order-of-magnitude sweep revealed a monotonic trend: AAPL blind MAPE drops from 1243% (1e-6) to 9.65% (0.10). At 0.05, NVDA partial hits **9.08% with +0.547 skill** — best partial score ever. At 0.10, AAPL blind hits 9.65% with +0.157 skill — ties dropout 0.10 for best AAPL blind.
+- **Output reg + MTP overloads**: Combining oreg 0.05 with MTP(2,4,8,16) explodes (3002% MAPE). Two strong regularisers fight. Use one or the other.
 - **Combining dropout + output reg** also failed (24-33% MAPE, worse than either alone).
 
-### Runners-up
+### Full sweep leaderboard (blind mode)
+
+| Rank | Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
+|------|--------|-----------|------------|-----------|------------|----------|
+| 1 | **MTP(2,4,8,16)+drop 0.01** | 11.84% | +0.089 | 18.42% | -0.008 | **15.13%** |
+| 2 | MTP(2,4,8,16) | 11.56% | +0.109 | 18.37% | +0.039 | **14.97%** |
+| 3 | oreg 0.10 | **9.65%** | **+0.157** | 21.36% | -0.285 | 15.51% |
+| 4 | oreg 0.08 | 9.86% | +0.093 | 22.86% | -0.400 | 16.36% |
+| 5 | oreg 0.05 | 13.03% | +0.007 | 18.68% | -0.048 | 15.86% |
+| 6 | dropout 0.10 | 9.51% | +0.119 | 21.17% | -0.270 | 15.34% |
+| 7 | dropout 0.01 | 18.12% | -0.405 | 16.89% | +0.202 | 17.51% |
+| 8 | MTP(2,4,8)+drop 0.03 | 16.59% | -0.278 | 17.93% | +0.124 | 17.26% |
+| 9 | MTP(2,4,8) | 15.36% | -0.179 | 17.96% | +0.048 | 16.66% |
+| — | baseline | 1243.62% | -185.66 | 19.48% | -0.125 | 631.55% |
+
+### Specialists
+
+Each feature has a mode where it excels:
+
+| Goal | Config | Best Metric |
+|------|--------|-------------|
+| Best NVDA partial | `--output-reg 0.05` | NVDA partial **9.08%** MAPE, **+0.547** skill |
+| Best AAPL blind | `--output-reg 0.10` | AAPL blind **9.65%** MAPE, **+0.157** skill |
+| Best AAPL blind | `--input-dropout 0.10` | AAPL blind **9.51%** MAPE, **+0.119** skill |
+| Best NVDA blind | `--input-dropout 0.01` | NVDA blind **16.89%** MAPE, **+0.202** skill |
+| Best avg MAPE | `--mtp-horizons 2,4,8,16` | Avg blind **14.97%** MAPE |
 
 ```bash
-# Pure MTP (best avg MAPE)
-python train.py --mtp-horizons 2,4,8,16
+# Balanced overall: MTP(2,4,8,16) + dropout 0.01
+python train.py --mtp-horizons 2,4,8,16 --input-dropout 0.01
 
-# Pure dropout (NVDA specialist)
+# NVDA partial specialist
+python train.py --output-reg 0.05
+
+# AAPL blind specialist
+python train.py --output-reg 0.10
+
+# NVDA blind specialist
 python train.py --input-dropout 0.01
 
-# Pure dropout (AAPL specialist)  
+# Pure MTP (best avg blind MAPE)
+python train.py --mtp-horizons 2,4,8,16
+
+# Pure dropout (AAPL blind specialist)
 python train.py --input-dropout 0.10
 ```
 
@@ -268,6 +303,8 @@ A running journal of every experiment. Newest entries on top.
 | dropout 0.01 | 18.12% / -0.405 | 16.89% / +0.202 | 15.98% / -0.275 | 15.86% / +0.250 |
 | MTP(2,4,8)+drop 0.03 | 16.59% / -0.278 | 17.93% / +0.124 | 16.10% / -0.254 | 14.95% / +0.288 |
 | MTP(2,4,8) | 15.36% / -0.179 | 17.96% / +0.048 | 14.19% / -0.108 | 10.15% / +0.492 |
+| oreg 0.05 | 13.03% / +0.007 | 18.68% / -0.048 | 13.38% / -0.039 | **9.08% / +0.547** |
+| oreg 0.10 | **9.65% / +0.157** | 21.36% / -0.285 | 12.32% / -0.155 | 24.58% / -0.585 |
 
 Format: `MAPE / skill_vs_naive_rmse`
 
@@ -285,10 +322,12 @@ Format: `MAPE / skill_vs_naive_rmse`
 |---------|---------|
 | MTP(2,4,8,16) + dropout 0.01 | **KEEP — optimal** |
 | MTP(2,4,8,16) alone | **KEEP — runner-up** |
-| dropout 0.10 alone | **KEEP — AAPL specialist** |
-| dropout 0.01 alone | **KEEP — NVDA specialist** |
-| Output reg (any rate) | **DROP** |
-| MTP + output reg | **DROP** |
+| Output reg 0.05 | **KEEP — NVDA partial specialist** |
+| Output reg 0.10 | **KEEP — AAPL blind specialist** |
+| dropout 0.10 alone | **KEEP — AAPL blind specialist** |
+| dropout 0.01 alone | **KEEP — NVDA blind specialist** |
+| MTP + output reg | **DROP — overloads** |
+| dropout + output reg | **DROP — interferes** |
 
 #### Run dirs
 
