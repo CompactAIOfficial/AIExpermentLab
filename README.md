@@ -424,9 +424,9 @@ python train.py --mtp-horizons 2,4,8,16
 
 A running journal of every experiment. Newest entries on top.
 
-### Day 6, Tier 1 features: Crowfeather AdamW, WSD schedule, EMA
+### Day 1, Tier 1 features: Crowfeather AdamW, WSD schedule, EMA
 
-* **What**: Implemented and isolated-tested three "Tier 1" features — pure config/optimizer changes with minimal code. Each tested individually vs baseline (Glint, 3-year window), then combined with winners from Day 4-5. 8 models trained, blind-benchmarked, top contenders full 3-mode benchmarked.
+* **What**: Implemented and isolated-tested three "Tier 1" features — pure config/optimizer changes with minimal code. Each tested individually vs baseline (Glint, 3-year window), then combined with winners from previous tests. 8 models trained, blind-benchmarked, top contenders full 3-mode benchmarked.
 * **Features**: `--crowfeather` (AdamW eps=1e-20 + beta2 ramp), `--lr-schedule wsd` (Warmup-Stable-Decay sqrt cooldown), `--ema-decay` (exponential moving average of weights)
 * **Compute**: CPU, ~20 minutes total
 
@@ -473,7 +473,7 @@ A running journal of every experiment. Newest entries on top.
 | 7 | oreg 0.05 | 13.03% | +0.007 | 18.68% | -0.048 | 15.86% |
 | 8 | dropout 0.01 | 18.12% | -0.405 | 16.89% | +0.202 | 17.51% |
 
-### Day 5, full grid search — 20+ configs, optimal found
+### Day 1, full grid search — 20+ configs, optimal found
 
 * **What**: Systematic grid search across MTP horizon variants (2,4 / 2,4,8 / 2,4,8,16 / 4,8), input dropout rates (0.003/0.005/0.01/0.03/0.05/0.10/0.15), output reg weights (0.0001/0.0005/0.001/0.005), and all combinations. 20+ models trained on Glint (82K params), blind-benchmarked to filter contenders, then full 3-mode benchmark on survivors.
 * **Winner**: `--mtp-horizons 2,4,8,16 --input-dropout 0.01` — first Glint config ever with positive skill on AAPL in both blind (+0.089) and partial (+0.014) modes.
@@ -520,7 +520,7 @@ Format: `MAPE / skill_vs_naive_rmse`
 
 `runs/Glint_AAPL_NVDA_mtp=2,4,8,16_drop=0.01/` — optimal config checkpoint and full benchmark.
 
-### Day 4, experiment framework + three feature A/B tests
+### Day 1, experiment framework + three feature A/B tests
 
 * **What**: Implemented three queued features behind opt-in `--flags` and ran full 3-mode benchmarks on Glint (82K params) vs a freshly re-trained baseline. Training window: 2022-01-01..2024-12-31 (3 years), predict 2025-01-01..2026-01-01 (250 steps).
 * **Features added**: `--mtp-horizons`, `--input-dropout`, `--output-reg`
@@ -612,7 +612,7 @@ python train.py --output-reg 0.001
 Run dirs: `runs/Glint_AAPL_NVDA_{mtp=2,4,8,drop=0.01,drop=0.05,drop=0.1,drop=0.15,oreg=0.001}`
 
 
-### Day 3, local normalisation — real predictions, no drift
+### Day 1, local normalisation — real predictions, no drift
 
 * **Problem recap**: global z-score normalisation caused blind predictions to sag
   toward the training mean (price-mode). Training on diffs flattened predictions
@@ -659,7 +659,7 @@ Run dirs: `runs/Glint_AAPL_NVDA_{mtp=2,4,8,drop=0.01,drop=0.05,drop=0.1,drop=0.1
 * Task: next-day close prediction. Train on 2024, benchmark 2025–2026.
 * Multi-ticker support (--tickers), per-ticker normalizers, prediction-vs-actual plots.
 * Corrected benchmark from one-step-ahead to blind autoregressive rollout.
-* Plots: `runs/Glint_AAPL_NVDA/plots/{AAPL,NVDA}_pred_vs_actual.png` (superseded by Day 2).
+* Plots: `runs/Glint_AAPL_NVDA/plots/{AAPL,NVDA}_pred_vs_actual.png` (superseded by later runs).
 * Compute: ~2.5 GPU hours
 * Notes: Took way to long to do by hand, thanks AMP code! (not sponsored, just really good coding agent!)
 
