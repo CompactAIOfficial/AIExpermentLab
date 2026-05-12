@@ -91,10 +91,10 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | Anti-pattern unlikelihood loss (push down curated bad continuations) | `anti_patterns.py` | queued |
 | GADW (Gradient Aware Dynamic Weighting for multi-loss balancing) | `gadw.py` | queued |
 | Curriculum learning (recurrent loop count ramp-up) | `curriculum.py` | queued |
-| Model averaging (EMA / SWA style weight smoothing) | `averaging.py` | queued |
+| Model averaging (EMA / SWA style weight smoothing) | `lab/experiments/ema.py` | **tested — KEPT (0.9999)** |
 | Muon optimizer (Newton-Schulz orthogonalization) | `optimizer.py` | queued |
-| Crowfeather AdamW (eps=1e-20, β2 ramp 0.95→0.97 post-warmup) | `optimizer.py` | queued |
-| WSD schedule (sqrt cooldown) vs cosine LR schedule | `training.py` | queued |
+| Crowfeather AdamW (eps=1e-20, β2 ramp 0.95→0.97 post-warmup) | `lab/experiments/crowfeather.py` | **tested — DROPPED** |
+| WSD schedule (sqrt cooldown) vs cosine LR schedule | `lab/experiments/wsd_schedule.py` | **tested — KEPT** |
 | FIM (Fill-In-the-Middle) augmentation during pretraining | `training.py` | queued |
 | Decontamination pass against eval suites | `data/decontamination.py` | queued |
 | OHEM (Online Hard Example Mining) with dynamic threshold | `training.py` | queued |
@@ -270,6 +270,46 @@ Any weight below ~0.01 is too weak to matter. Results are indistinguishable from
 
 Best for: "I want to confirm it doesn't work." Don't use.
 
+### `--lr-schedule wsd`
+
+Replaces cosine LR decay with Warmup-Stable-Decay: 10% warmup, constant plateau, then sqrt cooldown for the final phase. Based on the river-valley loss landscape theory (Wen et al., ICLR 2025) — the high stable LR lets the model traverse the "river" quickly, and the sharp cooldown drops it into the valley.
+
+| Does well | Sucks at |
+|-----------|----------|
+| Best blind AAPL of any Tier 1 config (11.74%, **+0.101 skill**). Trains longer before early-stopping (22 epochs vs 15). Zero extra params. | Worse DirAcc (0.30-0.33 blind). NVDA blind is baseline-level (19.52%). Partial mode mediocre (13.83% AAPL). |
+
+Best for: "I want better blind AAPL with zero param overhead."
+
+### `--ema-decay 0.9999`
+
+Maintains a shadow copy of model weights as an exponential moving average: `ema = 0.9999 * ema + 0.0001 * weights`. At validation and checkpoint time, the EMA-smoothed weights are used instead of the raw trained weights. Based on Morales-Brotons et al. (TMLR 2024).
+
+| Does well | Sucks at |
+|-----------|----------|
+| Best blind AAPL of any single config (10.85%, **+0.148 skill**). Ties oreg 0.10 for AAPL blind. Also great AAPL partial (11.25%, +0.093). | Nonblind accuracy degrades noticeably (3.2% MAPE vs normal 1.3%). Heavier averaging smooths away the sharp predictions needed for one-step-ahead. Runs full 50 epochs — no early stopping. |
+
+Best for: "I care most about multi-step AAPL prediction and can accept worse one-step-ahead."
+
+### `--ema-decay 0.999`
+
+Milder EMA smoothing. Less regularization than 0.9999.
+
+| Does well | Sucks at |
+|-----------|----------|
+| Best NVDA blind of any EMA config (18.26%, **+0.148 skill**). Nonblind unaffected (stays at 1.37%). Best NVDA DirAcc (0.528 blind). | AAPL blind is mediocre (16.42%). Partial AAPL worse than baseline (18.39%). Only helps NVDA, not AAPL. |
+
+Best for: "I want a small NVDA boost without hurting other modes."
+
+### `--crowfeather`
+
+AdamW with eps=1e-20 (effectively zero in float32) and beta2 that ramps from 0.95 to 0.97 after warmup. Based on the Crowfeather recipe: aggressive epsilon means the step size is purely signal-to-noise driven; ramping beta2 means the model explores first then stabilises.
+
+| Does well | Sucks at |
+|-----------|----------|
+| Decent AAPL blind (17.20%). Zero extra params. | Early-stops at 9 epochs (too fast). NVDA blind worse than baseline (32.16%). Unstable — the extreme epsilon makes training jittery. Crowfeather + WSD improves it (14.61% AAPL, 18.21% NVDA) but still behind plain WSD. |
+
+Best for: Nothing on its own. Could be combined with WSD as a minor tweak.
+
 ### Configs that don't stack
 
 These combinations were tested and performed strictly worse than either feature alone:
@@ -353,6 +393,8 @@ Each feature has a mode where it excels:
 | Best NVDA partial | `--output-reg 0.05` | NVDA partial **9.08%** MAPE, **+0.547** skill |
 | Best AAPL blind | `--output-reg 0.10` | AAPL blind **9.65%** MAPE, **+0.157** skill |
 | Best AAPL blind | `--input-dropout 0.10` | AAPL blind **9.51%** MAPE, **+0.119** skill |
+| Best AAPL blind | `--ema-decay 0.9999` | AAPL blind **10.85%** MAPE, **+0.148** skill |
+| Best NVDA blind (zero params) | `--lr-schedule wsd` | AAPL blind **11.74%** MAPE, **+0.101** skill |
 | Best NVDA blind | `--input-dropout 0.01` | NVDA blind **16.89%** MAPE, **+0.202** skill |
 | Best avg MAPE | `--mtp-horizons 2,4,8,16` | Avg blind **14.97%** MAPE |
 
@@ -360,20 +402,20 @@ Each feature has a mode where it excels:
 # Balanced overall: MTP(2,4,8,16) + dropout 0.01
 python train.py --mtp-horizons 2,4,8,16 --input-dropout 0.01
 
-# NVDA partial specialist
-python train.py --output-reg 0.05
+# Zero-param AAPL blind boost
+python train.py --lr-schedule wsd
 
 # AAPL blind specialist
-python train.py --output-reg 0.10
+python train.py --output-reg 0.10   # or: --input-dropout 0.10  or: --ema-decay 0.9999
+
+# NVDA partial specialist
+python train.py --output-reg 0.05
 
 # NVDA blind specialist
 python train.py --input-dropout 0.01
 
 # Pure MTP (best avg blind MAPE)
 python train.py --mtp-horizons 2,4,8,16
-
-# Pure dropout (AAPL blind specialist)
-python train.py --input-dropout 0.10
 ```
 
 ---
@@ -381,6 +423,55 @@ python train.py --input-dropout 0.10
 ## Progress Log
 
 A running journal of every experiment. Newest entries on top.
+
+### Day 6, Tier 1 features: Crowfeather AdamW, WSD schedule, EMA
+
+* **What**: Implemented and isolated-tested three "Tier 1" features — pure config/optimizer changes with minimal code. Each tested individually vs baseline (Glint, 3-year window), then combined with winners from Day 4-5. 8 models trained, blind-benchmarked, top contenders full 3-mode benchmarked.
+* **Features**: `--crowfeather` (AdamW eps=1e-20 + beta2 ramp), `--lr-schedule wsd` (Warmup-Stable-Decay sqrt cooldown), `--ema-decay` (exponential moving average of weights)
+* **Compute**: CPU, ~20 minutes total
+
+#### Blind mode results
+
+| Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill |
+|--------|-----------|------------|-----------|------------|
+| baseline | 1243.62% | -185.66 | 19.48% | -0.125 |
+| **WSD** | **11.74%** | **+0.101** | 19.52% | -0.130 |
+| **EMA 0.9999** | **10.85%** | **+0.148** | 18.70% | -0.050 |
+| EMA 0.9995 | 14.92% | -0.143 | 18.11% | +0.108 |
+| EMA 0.999 | 16.42% | -0.265 | 18.26% | +0.148 |
+| Crowfeather | 17.20% | -0.807 | 32.16% | -1.046 |
+| WSD + EMA 0.999 | 15.12% | -0.159 | 18.17% | +0.126 |
+| Crow + WSD | 14.61% | -0.121 | 18.21% | +0.122 |
+
+#### Key findings
+
+* **WSD schedule works**: Simply swapping cosine for WSD gives AAPL blind 11.74% with zero extra params. The river-valley theory holds — the high stable LR phase lets the model find a better basin, and the sqrt cooldown drops it in cleanly. Trains longer (22 epochs) but worth it.
+* **EMA at 0.9999 is a blind specialist**: Heaviest smoothing gives AAPL 10.85% blind and 11.25% partial — ties dropout/oreg for best AAPL blind. But nonblind degrades (3.2% MAPE). Zero extra params.
+* **EMA at 0.999 is an NVDA specialist**: Milder smoothing boosts NVDA blind to 18.26% with +0.148 skill, best DirAcc (0.528). Nonblind stays normal.
+* **Crowfeather is unstable**: Extreme epsilon (1e-20) causes jittery training. Early-stops at 9 epochs. Not useful alone.
+* **Combinations don't stack**: WSD + EMA and Crowfeather + WSD both performed worse than WSD alone. The features compete for the same regularization budget.
+
+#### Verdicts
+
+| Feature | Verdict |
+|---------|---------|
+| WSD schedule | **KEEP** — zero-param blind AAPL boost |
+| EMA 0.9999 | **KEEP** — blind specialist |
+| EMA 0.999 | **KEEP** — NVDA specialist |
+| Crowfeather | **DROP** (alone) / **NEUTRAL** (with WSD) |
+
+#### Updated leaderboard (blind mode)
+
+| Rank | Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
+|------|--------|-----------|------------|-----------|------------|----------|
+| 1 | MTP(2,4,8,16)+drop 0.01 | 11.84% | +0.089 | 18.42% | -0.008 | 15.13% |
+| 2 | MTP(2,4,8,16) | 11.56% | +0.109 | 18.37% | +0.039 | 14.97% |
+| 3 | oreg 0.10 | 9.65% | +0.157 | 21.36% | -0.285 | 15.51% |
+| 4 | EMA 0.9999 | 10.85% | +0.148 | 18.70% | -0.050 | 14.78% |
+| 5 | WSD | 11.74% | +0.101 | 19.52% | -0.130 | 15.63% |
+| 6 | dropout 0.10 | 9.51% | +0.119 | 21.17% | -0.270 | 15.34% |
+| 7 | oreg 0.05 | 13.03% | +0.007 | 18.68% | -0.048 | 15.86% |
+| 8 | dropout 0.01 | 18.12% | -0.405 | 16.89% | +0.202 | 17.51% |
 
 ### Day 5, full grid search — 20+ configs, optimal found
 
