@@ -186,6 +186,102 @@ python train.py --sleep-gate-cap 64
 
 ---
 
+## Config Cheat Sheet
+
+Quick reference for what each feature actually does in practice on stock data. Modes: blind = fully autoregressive (hardest), nonblind = one-step-ahead (easiest), partial = re-anchor every 126 steps.
+
+### `--mtp-horizons 2,4,8,16`
+
+Adds 4 auxiliary linear heads that predict future prices at horizons 2, 4, 8, 16 steps ahead. Auxiliary losses are added to the main MSE loss (weight 0.3). All heads share the backbone.
+
+| Does well | Sucks at |
+|-----------|----------|
+| Best all-rounder. Lowest avg blind MAPE (14.97%). Positive skill on NVDA blind. Good partial mode. | Worst Directional Accuracy (0.22–0.34 blind) — focuses on level prediction, not direction. 4 extra heads = 260 more params. |
+
+Best for: "I want decent results everywhere without thinking."
+
+### `--mtp-horizons 2,4,8,16 --input-dropout 0.01`
+
+Two independent regularizers: MTP heads + 1% input masking at training time. Mild enough that they don't interfere.
+
+| Does well | Sucks at |
+|-----------|----------|
+| First config ever with positive skill on AAPL in both blind (+0.089) AND partial (+0.014). Best balanced config across all 6 mode/ticker combos. | Worse Directional Accuracy than baseline. Adds 260 params. |
+
+Best for: "I want the most balanced config."
+
+### `--mtp-horizons 2,4,8`
+
+3 heads instead of 4. Slightly worse than the 4-head variant on average, but competitive.
+
+| Does well | Sucks at |
+|-----------|----------|
+| Strong NVDA partial (10.15%, +0.492 skill — second best ever). Fewer params than 4-head. | Blind AAPL (15.36%) and DirAcc worse than baseline. Outperformed on all metrics by the 4-head variant. |
+
+Best for: "I want MTP but want to save 65 params." (Not worth it.)
+
+### `--input-dropout 0.01`
+
+During training, each input element has a 1% chance of being replaced with zero. No extra params.
+
+| Does well | Sucks at |
+|-----------|----------|
+| Best NVDA blind ever (16.89%, **+0.202 skill**). Positive NVDA partial skill (+0.250). Zero extra params. | Blind AAPL (18.12%) and AAPL partial (15.98%) are mediocre. Only 1/100 inputs get dropped — easy to overlook. |
+
+Best for: "I only care about NVDA." Also: "I want zero extra parameters."
+
+### `--input-dropout 0.10`
+
+10% input masking. Much stronger regularisation.
+
+| Does well | Sucks at |
+|-----------|----------|
+| Best AAPL blind ever (9.51%, **+0.119 skill**). Ties oreg 0.10 for top AAPL blind MAPE. | NVDA blind suffers (21.17%). DirAcc drops. Destabilises at 15% or higher. Sweet spot is narrow. |
+
+Best for: "I only care about AAPL blind mode."
+
+### `--output-reg 0.05`
+
+Adds `0.05 * mean(pred^2)` to the training loss. Penalises extreme predictions in normalised space.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Best NVDA partial ever** (9.08%, **+0.547 skill**). Good AAPL blind (13.03%, +0.007). Positive skill on both tickers blind. Zero extra params. | Worst Directional Accuracy of any config (0.184–0.196 blind). Suppresses output variance — it's always a bit conservative. |
+
+Best for: "I want the best NVDA partial score." Also: "I want positive skill everywhere with zero param overhead."
+
+### `--output-reg 0.10`
+
+Stronger output penalty.
+
+| Does well | Sucks at |
+|-----------|----------|
+| Ties best AAPL blind ever (9.65%, **+0.157 skill**). AAPL DirAcc recovers to 0.476. | NVDA degrades across all modes (21% blind, 24% partial). Only use if you're benchmarking AAPL only. |
+
+Best for: "AAPL-only evaluation."
+
+### `--output-reg 0.001` (or lower)
+
+Any weight below ~0.01 is too weak to matter. Results are indistinguishable from baseline.
+
+| Does well | Sucks at |
+|-----------|----------|
+| Nothing. | Everything. Wastes your time. 0.001 adds 0.1% to the loss — it's a rounding error. |
+
+Best for: "I want to confirm it doesn't work." Don't use.
+
+### Configs that don't stack
+
+These combinations were tested and performed strictly worse than either feature alone:
+
+| Combo | Why it fails |
+|-------|-------------|
+| MTP + output reg | Two strong regularisers overload the 82K model. Both blind and partial explode to 3000%+ MAPE. |
+| MTP + dropout (wrong rate) | MTP(2,4,8)+dropout 0.01 is worse than either alone. MTP(2,4,8,16)+dropout 0.01 works; 0.003/0.005/0.03 don't. The window is narrow. |
+| dropout + output reg | Interferes (24-33% MAPE, worse than either alone). Different regularisation mechanisms that don't compose. |
+
+---
+
 ## Optimal Configuration (Glint)
 
 Found via systematic grid search across 20+ configurations: 4 MTP horizon variants × 10 dropout rates + output reg sweeps, each blind-benchmarked to find contenders, then full 3-mode benchmarked.
