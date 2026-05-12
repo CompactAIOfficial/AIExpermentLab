@@ -186,7 +186,21 @@ Add a new entry at the top of `## Progress Log` with:
 | <flag> | **KEEP** or **DROP** or **NEUTRAL** |
 ```
 
-### Phase 11: Commit
+### Phase 11: Day Numbering
+
+The day number in commit messages and the README Progress Log stays as-is unless the user explicitly says "it is now Day X".
+
+**Rules:**
+- If the current day is Day 1, all new commits say `Day 1:` and new log entries say `### Day 1,`.
+- Do NOT increment the day number on your own. Ever.
+- If the user says "it is now Day 2", then:
+  - New commits use `Day 2:`
+  - New Progress Log entries use `### Day 2,`
+  - Update the `[![Status](https://img.shields.io/badge/Status-Day_1-orange)]` badge in the README header to point to the new day number
+  - Existing commits and entries stay as-is — do not rebase old ones
+- If the user says "rename everything to Day X", use `git filter-branch` (Phase 12) to rename all past commits AND update the README content.
+
+### Phase 12: Commit
 
 One commit per logical phase. Use descriptive messages:
 
@@ -207,9 +221,9 @@ update stuff
 fix things
 ```
 
-### Phase 12: When to Git Rebase
+### Phase 13: When to Git Rebase
 
-Rename commit messages if they reference the wrong day number. Use `git filter-branch` for batch renaming:
+Rename commit messages if the user asks. Use `git filter-branch` for batch renaming:
 
 ```bash
 git filter-branch --msg-filter 'sed "s/Old Text/New Text/g"' -- <parent>..HEAD
