@@ -6,6 +6,8 @@
 
 **Open source training code for every weird idea I have decided to gather, bolt on, and benchmark.**
 
+> **⚠️ Domain warning**: This repo benchmarks on stock price prediction (regression on 1-D time series), not on language modelling. Features that help here (e.g. regressing a `--input-dropout` rate) may behave differently for LLMs, and vice versa. Some descriptions in the backlog below still reference their LLM/text origins and haven't been rewritten yet — the code adapts, the docs lag. YMMV.
+
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support_the_Lab-FF5E5B?style=for-the-badge&logo=kofi&logoColor=white)](https://ko-fi.com/compactai)
 [![License](https://img.shields.io/badge/License-AGPL_V3-blue?style=for-the-badge)](#license)
 [![Status](https://img.shields.io/badge/Status-Day_1-orange?style=for-the-badge)](#progress-log)
@@ -52,6 +54,8 @@ with no domain-specific tricks, so the same code can later be retargeted at text
 
 These are the techniques pulled from the old MyTrainer codebase that are queued up for porting and evaluation. Each will be implemented as an opt-in flag so we can run honest A/B tests.
 
+> **🧠 Origin note**: Many of these originate from LLM research (Mythos, DeepSeek, Gemma, COCONUT, etc.). They're described here in their original context, but our testbed is stock price regression. A "queued" status means it hasn't been adapted yet; a "tested" status means it was evaluated on stock data specifically. Results may not transfer.
+
 ### Architecture experiments
 
 | Feature | Origin | Status |
@@ -65,7 +69,7 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | Engram (DeepSeek-style hashed n-gram conditional memory, O(1) lookup) | `EngramBlock` | queued |
 | Manifold Hyper-Connections (Sinkhorn-Knopp doubly stochastic residual mixing) | `mhc` | queued |
 | COCONUT-style Latent Thinking blocks (continuous chain-of-thought) | `latent_think_layers` | queued |
-| Multi-Token Prediction (auxiliary heads at future horizons) | `mtp_horizons` | **tested** |
+| Multi-Token Prediction (auxiliary heads at future horizons) | `mtp_horizons` | **tested — KEPT** |
 | Per-Layer Embeddings (Gemma 3n PLE, token-conditional per-layer signal) | `ple_dim` | queued |
 | Auxiliary heads (bigram prediction, word boundary detection, L11) | `aux_*` | queued |
 | GQA, partial RoPE, sliding window, QK-norm, per-head output gating | `CausalSelfAttention` | queued |
@@ -95,7 +99,7 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | Decontamination pass against eval suites | `data/decontamination.py` | queued |
 | OHEM (Online Hard Example Mining) with dynamic threshold | `training.py` | queued |
 | Looping regularization (OpenMythos protection against weight collapse) | `training.py` | queued |
-| Input token dropout (replace fraction of inputs with zero) | `training.py` | **tested** |
+| Input token dropout (replace fraction of inputs with zero) | `input_dropout.py` | **tested — KEPT** |
 | Context loss (NCE-based contrastive prompt/response embedding loss) | `training.py` | queued |
 | Z-loss, entropy regularization, label smoothing | `training.py` | queued |
 | Output L2 regularization (penalize extreme predictions) | `output_reg.py` | **tested — DROPPED** |
