@@ -182,6 +182,40 @@ python train.py --sleep-gate-cap 64
 
 ---
 
+## Optimal Configuration (Glint)
+
+Based on the Day 4 experiments, the single best-performing Glint configuration is MTP alone:
+
+```bash
+python train.py --series Glint --tickers AAPL,NVDA \
+    --train-start 2022-01-01 --train-end 2024-12-31 \
+    --epochs 50 \
+    --mtp-horizons 2,4,8
+```
+
+| Mode | Ticker | MAPE | Skill |
+|------|--------|------|-------|
+| blind | AAPL | 15.36% | -0.18 |
+| blind | NVDA | 17.96% | +0.05 |
+| partial | AAPL | 14.19% | -0.11 |
+| partial | NVDA | 10.15% | +0.49 |
+| nonblind | AAPL | 1.33% | +0.87 |
+| nonblind | NVDA | 2.17% | +0.87 |
+
+Input dropout at 0.01 is a close second (18.12% / 16.89% blind MAPE) but **combining MTP + dropout degrades both** (31.82% / 20.34% blind) — the regularisation effects interfere when stacked. Use one or the other, not both.
+
+```bash
+# Option A (best overall): Multi-Token Prediction
+python train.py --mtp-horizons 2,4,8
+
+# Option B (blind-mode specialist): Input Dropout
+python train.py --input-dropout 0.01
+
+# Do NOT combine both — they interfere
+```
+
+---
+
 ## Progress Log
 
 A running journal of every experiment. Newest entries on top.
