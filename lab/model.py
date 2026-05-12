@@ -88,13 +88,25 @@ class TinyForecaster(nn.Module):
         self.norm = RMSNorm(cfg.d_model)
         self.head = nn.Linear(cfg.d_model, cfg.output_dim)
 
+        if cfg.mtp_horizons:
+            from .experiments.mtp import build_mtp_heads
+            self.mtp_heads = build_mtp_heads(cfg.d_model, cfg.mtp_horizons, cfg.output_dim)
+        else:
+            self.mtp_heads = None
+
     def forward(self, x):
         h = self.input_proj(x)
         h = self.pos(h)
         for blk in self.blocks:
             h = blk(h)
         h = self.norm(h)
-        return self.head(h[:, -1])
+        main = self.head(h[:, -1])
+        if self.mtp_heads is not None:
+            mtp = {}
+            for h_str, head in self.mtp_heads.items():
+                mtp[int(h_str)] = head(h[:, -1])
+            return main, mtp
+        return main
 
     def num_params(self) -> int:
         return sum(p.numel() for p in self.parameters())

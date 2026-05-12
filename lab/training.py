@@ -28,7 +28,10 @@ def make_loaders(train_ds, cfg: TrainConfig):
     )
 
 
-def train_model(model_cfg: ModelConfig, train_cfg: TrainConfig, train_ds, run_dir: str):
+def train_model(
+    model_cfg: ModelConfig, train_cfg: TrainConfig, train_ds, run_dir: str,
+    input_dropout: float = 0.0, output_reg: float = 0.0, mtp_weight: float = 0.3,
+):
     os.makedirs(run_dir, exist_ok=True)
     set_seed(train_cfg.seed)
 
@@ -36,6 +39,11 @@ def train_model(model_cfg: ModelConfig, train_cfg: TrainConfig, train_ds, run_di
     model = TinyForecaster(model_cfg).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=train_cfg.lr, weight_decay=train_cfg.weight_decay)
     loss_fn = nn.MSELoss()
+
+    from .experiments.input_dropout import apply_input_dropout
+    from .experiments.output_reg import output_regularization
+
+    has_mtp = bool(model_cfg.mtp_horizons)
 
     train_loader, val_loader = make_loaders(train_ds, train_cfg)
 
@@ -48,12 +56,34 @@ def train_model(model_cfg: ModelConfig, train_cfg: TrainConfig, train_ds, run_di
         t0 = time.time()
         train_loss = 0.0
         n = 0
-        for xb, yb in train_loader:
+        for batch in train_loader:
+            if has_mtp:
+                xb, yb, aux_targets = batch
+            else:
+                xb, yb = batch
             xb = xb.to(device)
             yb = yb.to(device)
+
+            xb = apply_input_dropout(xb, input_dropout, training=True)
+
             opt.zero_grad()
-            pred = model(xb)
+            out = model(xb)
+
+            if has_mtp:
+                pred, mtp_preds = out
+            else:
+                pred = out
+                mtp_preds = None
+
             loss = loss_fn(pred, yb)
+
+            if mtp_preds is not None and model_cfg.mtp_horizons:
+                for h, aux_pred in mtp_preds.items():
+                    aux_target = aux_targets[h].to(device)
+                    loss += mtp_weight * loss_fn(aux_pred, aux_target)
+
+            loss = loss + output_regularization(pred, output_reg)
+
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip)
             opt.step()
@@ -65,10 +95,18 @@ def train_model(model_cfg: ModelConfig, train_cfg: TrainConfig, train_ds, run_di
         val_loss = 0.0
         nv = 0
         with torch.no_grad():
-            for xb, yb in val_loader:
+            for batch in val_loader:
+                if has_mtp:
+                    xb, yb, _ = batch
+                else:
+                    xb, yb = batch
                 xb = xb.to(device)
                 yb = yb.to(device)
-                pred = model(xb)
+                out = model(xb)
+                if has_mtp:
+                    pred, _ = out
+                else:
+                    pred = out
                 val_loss += loss_fn(pred, yb).item() * xb.size(0)
                 nv += xb.size(0)
         val_loss /= max(1, nv)

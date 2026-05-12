@@ -64,7 +64,10 @@ def autoregressive_forecast(
             w_mean = window.mean()
             w_std = window.std() + 1e-8
             x = ((window - w_mean) / w_std).view(1, seq_len, 1)
-            p_norm = float(model(x).squeeze().item())
+            out = model(x)
+            if isinstance(out, tuple):
+                out = out[0]
+            p_norm = float(out.squeeze().item())
             p = p_norm * w_std.item() + w_mean.item()
             preds.append(p)
 

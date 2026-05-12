@@ -37,23 +37,32 @@ class LocallyNormalizedSeries(Dataset):
     learn trends and patterns.
     """
 
-    def __init__(self, prices: np.ndarray, seq_len: int, horizon: int = 1):
+    def __init__(self, prices: np.ndarray, seq_len: int, horizon: int = 1,
+                 aux_horizons: list[int] | None = None):
         self.prices = prices.astype(np.float32)
         self.seq_len = seq_len
         self.horizon = horizon
+        self.aux_horizons = aux_horizons or []
+        self._max_h = max([horizon] + self.aux_horizons)
 
     def __len__(self):
-        return max(0, len(self.prices) - self.seq_len - self.horizon + 1)
+        return max(0, len(self.prices) - self.seq_len - self._max_h + 1)
+
+    def _norm_target(self, target_idx: int, w_mean: float, w_std: float):
+        return torch.tensor([(self.prices[target_idx] - w_mean) / w_std], dtype=torch.float32)
 
     def __getitem__(self, i):
         window = self.prices[i : i + self.seq_len]
-        target = self.prices[i + self.seq_len + self.horizon - 1]
         w_mean = window.mean()
         w_std = window.std() + 1e-8
-        return (
-            torch.from_numpy(((window - w_mean) / w_std)).unsqueeze(-1),
-            torch.tensor([(target - w_mean) / w_std], dtype=torch.float32),
-        )
+        x = torch.from_numpy(((window - w_mean) / w_std)).unsqueeze(-1)
+        y_main = self._norm_target(i + self.seq_len + self.horizon - 1, w_mean, w_std)
+        if self.aux_horizons:
+            aux = {}
+            for h in self.aux_horizons:
+                aux[h] = self._norm_target(i + self.seq_len + h - 1, w_mean, w_std)
+            return x, y_main, aux
+        return x, y_main
 
 
 def _load_raw(ticker: str, start: str, end: str, feature: str) -> Tuple[np.ndarray, pd.DatetimeIndex]:
@@ -63,6 +72,7 @@ def _load_raw(ticker: str, start: str, end: str, feature: str) -> Tuple[np.ndarr
 
 def build_datasets(cfg: DataConfig):
     feat = cfg.features[0]
+    aux = cfg.mtp_horizons or None
     train_sets: List[Dataset] = []
     test_sets: Dict[str, LocallyNormalizedSeries] = {}
     test_dates: Dict[str, pd.DatetimeIndex] = {}
@@ -71,8 +81,8 @@ def build_datasets(cfg: DataConfig):
         train_raw, _ = _load_raw(ticker, cfg.train_start, cfg.train_end, feat)
         test_raw, test_idx = _load_raw(ticker, cfg.test_start, cfg.test_end, feat)
 
-        train_sets.append(LocallyNormalizedSeries(train_raw, cfg.seq_len, cfg.horizon))
-        test_sets[ticker] = LocallyNormalizedSeries(test_raw, cfg.seq_len, cfg.horizon)
+        train_sets.append(LocallyNormalizedSeries(train_raw, cfg.seq_len, cfg.horizon, aux))
+        test_sets[ticker] = LocallyNormalizedSeries(test_raw, cfg.seq_len, cfg.horizon, aux)
         test_dates[ticker] = test_idx
 
     train_ds = ConcatDataset(train_sets) if len(train_sets) > 1 else train_sets[0]

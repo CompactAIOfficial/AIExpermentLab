@@ -29,6 +29,14 @@ def parse_args():
     p.add_argument("--device", default="cpu")
     p.add_argument("--output", default=None)
     p.add_argument("--seed", type=int, default=42)
+
+    # experiment flags
+    p.add_argument("--mtp-horizons", type=str, default=None,
+                   help="Comma-separated auxiliary horizons, e.g. '2,4,8'")
+    p.add_argument("--input-dropout", type=float, default=0.0,
+                   help="Replace fraction of input tokens with zero during training")
+    p.add_argument("--output-reg", type=float, default=0.0,
+                   help="L2 penalty weight on output predictions")
     return p.parse_args()
 
 
@@ -38,6 +46,11 @@ def main():
 
     model_cfg = SERIES[args.series]
     model_cfg.seq_len = args.seq_len
+
+    if args.mtp_horizons:
+        model_cfg.mtp_horizons = [int(h) for h in args.mtp_horizons.split(",")]
+    else:
+        model_cfg.mtp_horizons = []
 
     train_cfg = TrainConfig(
         batch_size=args.batch_size,
@@ -55,22 +68,41 @@ def main():
         test_end=args.test_end,
         seq_len=args.seq_len,
         horizon=args.horizon,
+        mtp_horizons=model_cfg.mtp_horizons,
     )
 
     tag = "_".join(tickers)
     out = args.output or os.path.join("runs", f"{args.series}_{tag}")
     os.makedirs(out, exist_ok=True)
 
+    flags = []
+    if args.mtp_horizons:
+        flags.append(f"mtp={args.mtp_horizons}")
+    if args.input_dropout > 0:
+        flags.append(f"drop={args.input_dropout}")
+    if args.output_reg > 0:
+        flags.append(f"oreg={args.output_reg}")
+    suffix = "_" + "_".join(flags) if flags else ""
+    out = out + suffix
+
     print(f"[train] series={args.series}  tickers={tickers}  device={args.device}")
     print(f"[train] window={data_cfg.train_start}..{data_cfg.train_end}  horizon={args.horizon}")
+    if flags:
+        print(f"[train] flags: {' '.join(flags)}")
+    print(f"[train] output={out}")
 
     train_ds, _, _ = build_datasets(data_cfg)
     print(f"[train] train_examples={len(train_ds)}  (across {len(tickers)} ticker(s))")
 
+    os.makedirs(out, exist_ok=True)
     with open(os.path.join(out, "data_cfg.json"), "w") as f:
         json.dump(data_cfg.__dict__, f, indent=2)
 
-    model, history = train_model(model_cfg, train_cfg, train_ds, out)
+    model, history = train_model(
+        model_cfg, train_cfg, train_ds, out,
+        input_dropout=args.input_dropout,
+        output_reg=args.output_reg,
+    )
     plot_loss_curve(history, os.path.join(out, "loss_curve.png"))
 
     print(f"[train] params={model.num_params():,}  saved to {out}/model.pt")

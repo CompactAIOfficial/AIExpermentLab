@@ -12,6 +12,7 @@ class ModelConfig:
     seq_len: int = 32
     dropout: float = 0.1
     output_dim: int = 1
+    mtp_horizons: List[int] = field(default_factory=list)
 
 
 @dataclass
@@ -38,6 +39,7 @@ class DataConfig:
     horizon: int = 1
     features: List[str] = field(default_factory=lambda: ["Close"])
     diff_mode: bool = False
+    mtp_horizons: List[int] = field(default_factory=list)
 
 
 SERIES = {
