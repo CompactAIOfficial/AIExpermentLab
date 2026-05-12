@@ -225,6 +225,7 @@ A running journal of every experiment. Newest entries on top.
 * Plots: `runs/Shard_AAPL_NVDA/plots/{AAPL,NVDA}_{blind,nonblind,partial}.png`.
 * Trained on RTX 5090 in ~4 seconds total. CPU equivalent ~60 seconds.
 
+
 ### Day 1, multi-ticker + plotting + blind correction
 
 * Stood up the smallest plausible causal transformer (RMSNorm + SwiGLU + sinusoidal pos enc, 82,433 params).
@@ -232,6 +233,8 @@ A running journal of every experiment. Newest entries on top.
 * Multi-ticker support (--tickers), per-ticker normalizers, prediction-vs-actual plots.
 * Corrected benchmark from one-step-ahead to blind autoregressive rollout.
 * Plots: `runs/Glint_AAPL_NVDA/plots/{AAPL,NVDA}_pred_vs_actual.png` (superseded by Day 2).
+* Compute: ~2.5 GPU hours
+* Notes: Took way to long to do by hand, thanks AMP code! (not sponsored, just really good coding agent!)
 
 ### Day 0, repo bootstrap
 
