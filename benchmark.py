@@ -77,18 +77,36 @@ def directional_accuracy_series(actual: np.ndarray, predicted: np.ndarray, last_
     return float((actual_dir[nz] == pred_dir[nz]).mean())
 
 
+def _diffs_to_prices(diffs: np.ndarray, start_price: float) -> np.ndarray:
+    prices = np.empty(len(diffs), dtype=np.float32)
+    p = start_price
+    for i, d in enumerate(diffs):
+        p = p + d
+        prices[i] = p
+    return prices
+
+
 def evaluate_forecast(
     model, seed_n: np.ndarray, actual_n: np.ndarray, norm: Normalizer,
     seq_len: int, device: str, mode: str, partial_interval: int,
+    diff_mode: bool = False, last_train_price: float | None = None,
+    actual_raw_prices: np.ndarray | None = None,
 ):
     pred_n = autoregressive_forecast(
         model, seed_n, len(actual_n), device, seq_len,
         mode=mode, actuals=actual_n, partial_interval=partial_interval,
     )
 
-    pred_p = norm.inverse(pred_n)
-    actual_p = norm.inverse(actual_n)
-    last_seed_p = float(norm.inverse(seed_n[-1:])[0])
+    if diff_mode:
+        pred_diffs = norm.inverse(pred_n)
+        actual_diffs = norm.inverse(actual_n)
+        pred_p = _diffs_to_prices(pred_diffs, float(last_train_price))
+        actual_p = actual_raw_prices if actual_raw_prices is not None else _diffs_to_prices(actual_diffs, float(last_train_price))
+        last_seed_p = float(last_train_price)
+    else:
+        pred_p = norm.inverse(pred_n)
+        actual_p = norm.inverse(actual_n)
+        last_seed_p = float(norm.inverse(seed_n[-1:])[0])
 
     mae = float(np.mean(np.abs(pred_p - actual_p)))
     rmse = float(np.sqrt(np.mean((pred_p - actual_p) ** 2)))
@@ -133,20 +151,26 @@ def main():
         data_dict["test_end"] = args.test_end
     data_cfg = DataConfig(**data_dict)
 
-    seeds, actuals, norms, dates = build_blind_test(data_cfg)
+    seeds, actuals_norm, norms, dates, last_train_prices, actual_raw_prices = (
+        build_blind_test(data_cfg)
+    )
 
     all_metrics: Dict[str, dict] = {}
     plot_dir = os.path.join(run_dir, "plots")
     label = MODE_LABELS[args.mode]
+    dim = "diffs" if data_cfg.diff_mode else "prices"
 
-    print(f"[bench] {label}")
-    print(f"[bench] seed = last {data_cfg.seq_len} days of training "
+    print(f"[bench] {label}  (model trained on {dim})")
+    print(f"[bench] seed = last {data_cfg.seq_len} training {dim} "
           f"({data_cfg.train_end}) → predict {data_cfg.test_start} .. {data_cfg.test_end}")
 
     for ticker in data_cfg.tickers:
         m, pred_p, actual_p = evaluate_forecast(
-            model, seeds[ticker], actuals[ticker], norms[ticker],
+            model, seeds[ticker], actuals_norm[ticker], norms[ticker],
             data_cfg.seq_len, args.device, args.mode, args.partial_interval,
+            diff_mode=data_cfg.diff_mode,
+            last_train_price=last_train_prices[ticker],
+            actual_raw_prices=actual_raw_prices[ticker],
         )
         all_metrics[ticker] = m
 

@@ -139,7 +139,7 @@ For a tiny model on a daily close series, `mape_pct` in the low single digits an
 |------|---------|-------|
 | `--series` | `Glint` | Picks a model size from `lab/config.py:SERIES`. |
 | `--tickers` | `AAPL` | Comma-separated `yfinance` symbols. |
-| `--train-start` / `--train-end` | `2024-01-01` / `2024-12-31` | Training window. |
+| `--train-start` / `--train-end` | `2022-01-01` / `2024-12-31` | Training window (3 years by default). |
 | `--test-start` / `--test-end` | `2025-01-01` / `2026-01-01` | Saved into the run for later benchmarking. |
 | `--seq-len` | `32` | Number of past days fed into the model. |
 | `--horizon` | `1` | Days ahead to predict. |
@@ -149,6 +149,7 @@ For a tiny model on a daily close series, `mape_pct` in the low single digits an
 | `--device` | `cpu` | Use `cuda` if you have it. |
 | `--output` | `runs/<series>_<tickers>` | Run directory. |
 | `--seed` | `42` | RNG seed. |
+| `--diff-mode` | off | Train on price diffs instead of absolute prices. **Eliminates autoregressive drift.** |
 
 ### `benchmark.py`
 

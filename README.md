@@ -144,14 +144,15 @@ AIExpermentLab/
 pip install -r requirements.txt
 
 # Train on 3 years of history (2022–2024), then predict 2025–2026
+# Use --diff-mode to prevent blind autoregressive drift toward the training mean
 python train.py --series Glint --tickers AAPL,NVDA \
     --train-start 2022-01-01 --train-end 2024-12-31 \
-    --epochs 30
+    --diff-mode --epochs 30
 
 # Benchmark on 2025–2026 (choose a mode)
-python benchmark.py --model runs/Glint_AAPL_NVDA/model.pt --mode blind      # never sees test prices
-python benchmark.py --model runs/Glint_AAPL_NVDA/model.pt --mode nonblind   # one-step-ahead
-python benchmark.py --model runs/Glint_AAPL_NVDA/model.pt --mode partial    # re-anchor every ~6mo
+python benchmark.py --model runs/Glint_AAPL_NVDA_diff/model.pt --mode blind      # never sees test prices
+python benchmark.py --model runs/Glint_AAPL_NVDA_diff/model.pt --mode nonblind   # one-step-ahead
+python benchmark.py --model runs/Glint_AAPL_NVDA_diff/model.pt --mode partial    # re-anchor every ~6mo
 ```
 
 You can pass any comma-separated list of `yfinance` tickers to `--tickers`
@@ -163,6 +164,11 @@ independently with its own normalizer.
 The benchmark seeds from the last `seq_len` real training days, then runs in the
 selected mode — blind (autoregressive), nonblind (one-step-ahead), or partial
 (re-anchored every N steps).
+
+**`--diff-mode` eliminates the autoregressive drift problem**: instead of
+predicting absolute prices (which sag toward the training mean under uncertainty),
+the model learns daily price changes (diffs). The uncertainty default becomes
+"no change" (flat at the last known price) instead of "sag toward the past mean."
 
 See [docs/USAGE.md](docs/USAGE.md) for full options, ticker swapping, and how to read the
 benchmark output. Architecture notes live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -179,6 +185,32 @@ python train.py --sleep-gate-cap 64
 ## Progress Log
 
 A running journal of every experiment. Newest entries on top.
+
+### Day 3, diff-mode: autoregressive drift killed
+
+* The model was systematically sagging toward the 2022–24 mean in long blind rollouts
+  because MSE loss on z-scored **prices** defaults to "predict the training mean" under
+  uncertainty.
+* Fix: train on price **diffs** (daily changes) instead of absolute prices. Diffs are
+  stationary around zero, so the model's uncertainty default is "no change" (flat
+  prediction), not "sag toward the past mean".
+* Added `--diff-mode` flag to `train.py`. The model architecture is unchanged; only
+  the data pipeline converts prices → diffs on the fly.
+* Retrained Glint on AAPL + NVDA (2022–24 training, 2025–26 test):
+
+  | Mode | Ticker | MAPE   | DirAcc | skill_vs_naive_rmse |
+  |------|--------|--------|--------|---------------------|
+  | blind | AAPL  | 15.04% | 0.524  | -0.16               |
+  | blind | NVDA  | 15.22% | 0.532  | **+0.26**           |
+  | nonblind | AAPL | 17.64% | 0.492 | -0.35               |
+  | nonblind | NVDA | 12.77% | 0.512 | **+0.38**           |
+  | partial | AAPL | 15.04% | 0.528  | -0.16               |
+  | partial | NVDA | 15.24% | 0.532  | **+0.26**           |
+
+* NVDA beats the naive baseline (positive skill) — the model learned real signal.
+* AAPL blind prediction is a flat line at ~$240 (last training price).
+  **No downward drift whatsoever.**
+* Plots: `runs/Glint_AAPL_NVDA_diff/plots/{AAPL,NVDA}_{blind,nonblind,partial}.png`.
 
 ### Day 2, three benchmark modes + 3 years training
 

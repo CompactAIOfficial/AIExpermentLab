@@ -36,6 +36,7 @@ class DataConfig:
     seq_len: int = 32
     horizon: int = 1
     features: List[str] = field(default_factory=lambda: ["Close"])
+    diff_mode: bool = False
 
 
 SERIES = {

@@ -73,7 +73,13 @@ class Normalizer:
         return n
 
 
-def _load_series(ticker: str, start: str, end: str, feature: str) -> Tuple[np.ndarray, pd.DatetimeIndex]:
+def _to_diffs(prices: np.ndarray) -> np.ndarray:
+    """Price-to-price differences (loses first element)."""
+    return prices[1:] - prices[:-1]
+
+
+def _load_raw(ticker: str, start: str, end: str, feature: str) -> Tuple[np.ndarray, pd.DatetimeIndex]:
+    """Return raw prices and their dates."""
     df = fetch_prices(ticker, start, end)
     return df[feature].values.astype(np.float32), df.index
 
@@ -86,42 +92,73 @@ def build_datasets(cfg: DataConfig):
     norms: Dict[str, Normalizer] = {}
 
     for ticker in cfg.tickers:
-        train_raw, _ = _load_series(ticker, cfg.train_start, cfg.train_end, feat)
-        test_raw, test_idx = _load_series(ticker, cfg.test_start, cfg.test_end, feat)
+        train_raw, _ = _load_raw(ticker, cfg.train_start, cfg.train_end, feat)
+        test_raw, test_idx = _load_raw(ticker, cfg.test_start, cfg.test_end, feat)
 
-        norm = Normalizer().fit(train_raw)
+        if cfg.diff_mode:
+            train_src = _to_diffs(train_raw)
+            test_src = _to_diffs(test_raw)
+        else:
+            train_src = train_raw
+            test_src = test_raw
+
+        norm = Normalizer().fit(train_src)
         norms[ticker] = norm
 
-        train_sets.append(WindowedSeries(norm.transform(train_raw), cfg.seq_len, cfg.horizon))
-        test_sets[ticker] = WindowedSeries(norm.transform(test_raw), cfg.seq_len, cfg.horizon)
-        test_dates[ticker] = test_idx
+        train_sets.append(WindowedSeries(norm.transform(train_src), cfg.seq_len, cfg.horizon))
+        test_sets[ticker] = WindowedSeries(norm.transform(test_src), cfg.seq_len, cfg.horizon)
+        test_dates[ticker] = test_idx if not cfg.diff_mode else test_idx[1:]
 
     train_ds = ConcatDataset(train_sets) if len(train_sets) > 1 else train_sets[0]
     return train_ds, test_sets, norms, test_dates
 
 
 def build_blind_test(cfg: DataConfig):
+    """Build seed tensors for blind autoregressive evaluation.
+
+    Returns (seeds, actuals_norm, norms, dates, last_train_prices).
+    - seeds / actuals_norm are always **normalized** values (prices or diffs).
+    - last_train_prices maps ticker → last raw training close, needed to
+      convert diff-mode predictions back to price space.
+    - When diff_mode=True the actual test prices (raw) are returned separately
+      via actual_raw_prices so benchmark can score in price space.
+    """
     feat = cfg.features[0]
     seeds: Dict[str, np.ndarray] = {}
-    actuals: Dict[str, np.ndarray] = {}
+    actuals_norm: Dict[str, np.ndarray] = {}
     dates: Dict[str, pd.DatetimeIndex] = {}
     norms: Dict[str, Normalizer] = {}
+    last_train_prices: Dict[str, float] = {}
+    actual_raw_prices: Dict[str, np.ndarray] = {}
 
     for ticker in cfg.tickers:
-        train_raw, _ = _load_series(ticker, cfg.train_start, cfg.train_end, feat)
-        test_raw, test_idx = _load_series(ticker, cfg.test_start, cfg.test_end, feat)
+        train_raw, _ = _load_raw(ticker, cfg.train_start, cfg.train_end, feat)
+        test_raw, test_idx = _load_raw(ticker, cfg.test_start, cfg.test_end, feat)
 
-        if len(train_raw) < cfg.seq_len:
+        if len(train_raw) < cfg.seq_len + 1:
             raise RuntimeError(
                 f"{ticker}: training window only has {len(train_raw)} rows, "
-                f"need at least seq_len={cfg.seq_len} for the seed."
+                f"need at least seq_len+1={cfg.seq_len + 1} for diff seed."
             )
 
-        norm = Normalizer().fit(train_raw)
+        last_train_prices[ticker] = float(train_raw[-1])
+        actual_raw_prices[ticker] = test_raw.copy()
+
+        if cfg.diff_mode:
+            train_src = _to_diffs(train_raw)
+            cross_diff = test_raw[0] - train_raw[-1]
+            test_src = np.concatenate([[cross_diff], _to_diffs(test_raw)])
+            test_idx_aligned = test_idx  # cross_diff corresponds to test_idx[0]
+        else:
+            train_src = train_raw
+            test_src = test_raw
+            test_idx_aligned = test_idx
+
+        norm = Normalizer().fit(train_src)
         norms[ticker] = norm
 
-        seeds[ticker] = norm.transform(train_raw)[-cfg.seq_len:]
-        actuals[ticker] = norm.transform(test_raw)
-        dates[ticker] = test_idx
+        seeds[ticker] = norm.transform(train_src)[-cfg.seq_len:]
+        actuals_norm[ticker] = norm.transform(test_src)
+        dates[ticker] = test_idx_aligned
 
-    return seeds, actuals, norms, dates
+    return seeds, actuals_norm, norms, dates, last_train_prices, actual_raw_prices

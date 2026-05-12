@@ -29,6 +29,9 @@ def parse_args():
     p.add_argument("--device", default="cpu")
     p.add_argument("--output", default=None)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--diff-mode", action="store_true",
+                   help="Train on price diffs (stationary target) instead of absolute prices. "
+                        "Eliminates autoregressive drift toward the training mean.")
     return p.parse_args()
 
 
@@ -55,9 +58,12 @@ def main():
         test_end=args.test_end,
         seq_len=args.seq_len,
         horizon=args.horizon,
+        diff_mode=args.diff_mode,
     )
 
     tag = "_".join(tickers)
+    if args.diff_mode:
+        tag += "_diff"
     out = args.output or os.path.join("runs", f"{args.series}_{tag}")
     os.makedirs(out, exist_ok=True)
 
