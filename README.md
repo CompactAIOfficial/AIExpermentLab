@@ -727,6 +727,12 @@ All bugs, regressions, and bad ideas are mine.
 
 ---
 
+### For AI agents
+
+This repo has an [AGENTS.md](AGENTS.md) file that describes the exact process used to test and evaluate features. If you're too lazy to manually implement something, tell your agent to read `AGENTS.md` first, then ask it to knock out one of the [queued tasks](#feature-backlog). The agent will know how to flag-gate it, test it in isolation, benchmark all three modes, and log the results — because it's all documented step by step.
+
+---
+
 <div align="center">
 
 *Built in public. Logged in public. [ko-fi.com/compactai](https://ko-fi.com/compactai).*
