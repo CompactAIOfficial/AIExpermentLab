@@ -12,6 +12,107 @@ This document describes the exact process used to evaluate features in this repo
 6. **Log honestly.** Every result goes in the Config Cheat Sheet with "Does well" and "Sucks at" columns. If it failed, say why. If it only helps one ticker, say that.
 7. **Commit frequently.** One commit per experiment phase (implementation, results, adjustments).
 
+## Code Conventions
+
+Follow these exactly. They keep the repo readable and the experiments reproducible.
+
+### File layout
+
+Every experiment touches exactly these files:
+
+| File | What goes there | Change it? |
+|------|----------------|------------|
+| `lab/experiments/<name>.py` | Pure logic: functions, one class if needed (e.g. ModelEMA) | **Create new.** Export functions, not classes unless a class is genuinely needed. |
+| `lab/training.py` | Wire into `train_model()`. Add a `kwarg` with a safe default (0/False/None). | **Modify.** One new parameter per feature. Keep the function signature clean. |
+| `train.py` | CLI flag in `parse_args()`, flag in the suffix list, pass to `train_model()`. | **Modify.** Three lines: arg, suffix, pass. |
+| `lab/model.py` | Only if the feature changes the transformer (e.g. extra heads). | **Modify sparingly.** Keep the baseline model intact. Use `if cfg.feature_enabled:` to gate new code. |
+| `lab/config.py` | Only if the feature adds a field to `ModelConfig` or `DataConfig`. | **Modify sparingly.** Use `field(default_factory=list)` for list fields so old checkpoints still load. |
+| `lab/data/pipeline.py` | Only if the feature changes how data is loaded (e.g. multi-horizon targets). | **Modify sparingly.** |
+
+### What NOT to modify
+
+Do not touch these unless the feature absolutely demands it:
+
+- `benchmark.py` — only change if the model output format changes (e.g. MTP returns tuple)
+- `lab/plotting.py` — plotting is the last concern
+- `lab/data/formats.py` — not used by stock pipeline
+- `requirements.txt` — no new dependencies. Use PyTorch + stdlib only.
+
+### Import style
+
+```python
+# Good — stdlib + torch only
+import math
+import torch
+import torch.nn as nn
+
+# Also good — local experiment imports inside the function that uses them
+def train_model(..., my_feature=False):
+    if my_feature:
+        from .experiments.my_feature import do_thing
+
+# Bad — adding new dependencies
+import pandas  # no, already imported elsewhere
+import scipy   # no, not in requirements
+import einops  # no, extra dependency
+```
+
+Why local imports? So the baseline path never imports experiment code. If the flag is off, the experiment file is never loaded.
+
+### Comment style
+
+**Do not add any comments to experiment files.** The code should be self-explanatory. If it's not, make it cleaner.
+
+```python
+# Bad
+x = x * mask.float()  # apply dropout mask
+
+# Good — no comment needed, the function name says it all
+x = apply_input_dropout(x, rate=0.1, training=True)
+```
+
+The only exception: a 1-line docstring on the module if the technique is non-obvious (e.g. "Implements WSD warmup-stable-decay LR schedule per Wen et al. ICLR 2025"). Even then, keep it to one sentence.
+
+### Function/class style
+
+- **Export functions, not classes.** The only class you should ever need is `ModelEMA` (because it holds state across steps).
+- **One function per file does the work.** The rest is helpers.
+- **Type hints on all function signatures.** Use `list[int]` not `List[int]` (Python 3.9+).
+- **Default parameters that disable the feature.** If the feature has a `weight`, default is `0.0`. If a `bool`, default is `False`. If a `decay`, default is `0.0` (disabled).
+
+### Flag naming
+
+```python
+# In train.py parse_args():
+p.add_argument("--my-feature", type=float, default=0.0,
+               help="What it does and what the value means")
+
+# The flag name is kebab-case. The experiment file is snake_case.
+# --my-feature → lab/experiments/my_feature.py
+```
+
+### Output directory naming
+
+Flags accumulate in the order they appear on the command line:
+
+```python
+# Command: --mtp-horizons 2,4,8,16 --input-dropout 0.01
+# Output:  runs/Glint_AAPL_NVDA_mtp=2,4,8,16_drop=0.01
+
+# Command: --lr-schedule wsd --ema-decay 0.999
+# Output:  runs/Glint_AAPL_NVDA_wsd_ema=0.999
+```
+
+This is handled automatically in `train.py:main()`. Just add your flag to the `flags` list there.
+
+### ModelConfig vs TrainConfig vs DataConfig
+
+- **ModelConfig**: Architecture. d_model, n_layers, mtp_horizons, etc. Loaded from checkpoint at benchmark time.
+- **TrainConfig**: Training hyperparams. lr, epochs, batch_size, device, seed. NOT saved in checkpoint (benchmark doesn't need it).
+- **DataConfig**: Data parameters. tickers, train_start, seq_len, mtp_horizons (for dataset targets). Saved as `data_cfg.json` in the run dir.
+
+If your feature adds a field to ModelConfig, it must have a default so old checkpoints still load. Use `field(default_factory=list)` for mutable types.
+
 ## Step-by-Step Process
 
 ### Phase 1: Research
