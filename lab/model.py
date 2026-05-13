@@ -149,6 +149,17 @@ class TinyForecaster(nn.Module):
         else:
             self.mtp_heads = None
 
+        if cfg.act_max_steps > 0:
+            from .experiments.adaptive_halting import AdaptiveHalting
+            self.act = AdaptiveHalting(
+                self.blocks, cfg.d_model,
+                max_steps=cfg.act_max_steps,
+                epsilon=cfg.act_epsilon,
+                time_penalty=cfg.act_time_penalty,
+            )
+        else:
+            self.act = None
+
     def forward(self, x):
         h = self.input_proj(x)
         h = self.pos(h)
@@ -159,6 +170,9 @@ class TinyForecaster(nn.Module):
             for blk, hc in zip(self.blocks, self.hc_layers):
                 streams = hc(streams, lambda x, b=blk: b(x))
             h = streams.mean(dim=1)
+        elif self.act is not None:
+            h, ponder_cost = self.act(h)
+            self._ponder_cost = ponder_cost
         else:
             for blk in self.blocks:
                 h = blk(h)

@@ -59,6 +59,18 @@ def parse_args():
                    help="Number of KV heads for Grouped Query Attention (0=use full n_heads, standard MHA)")
     p.add_argument("--qk-norm", action="store_true",
                    help="Apply RMSNorm to Q and K before attention")
+    p.add_argument("--slerp-t", type=float, default=0.0,
+                   help="SLERP merge ratio (0=disabled). Marks run for checkpoint merging; actual merge is post-training.")
+    p.add_argument("--lora-rank", type=int, default=0,
+                   help="Depth LoRA rank (0=disabled). Adds low-rank adapters to all linear layers in each block.")
+    p.add_argument("--lora-alpha", type=float, default=1.0,
+                   help="LoRA scaling factor (default 1.0). Scaling = alpha / rank.")
+    p.add_argument("--act-max-steps", type=int, default=0,
+                   help="Adaptive Halting max ponder steps (0=disabled). Per-position dynamic computation.")
+    p.add_argument("--act-epsilon", type=float, default=0.01,
+                   help="ACT halting threshold (default 0.01). Position halts when accumulated prob > 1-epsilon.")
+    p.add_argument("--act-time-penalty", type=float, default=0.001,
+                   help="ACT ponder cost weight (default 0.001). Multiplied by avg steps used.")
     return p.parse_args()
 
 
@@ -80,6 +92,13 @@ def main():
         model_cfg.gqa_kv_heads = args.gqa_kv_heads
     if args.qk_norm:
         model_cfg.qk_norm = True
+    if args.lora_rank > 0:
+        model_cfg.lora_rank = args.lora_rank
+        model_cfg.lora_alpha = args.lora_alpha
+    if args.act_max_steps > 0:
+        model_cfg.act_max_steps = args.act_max_steps
+        model_cfg.act_epsilon = args.act_epsilon
+        model_cfg.act_time_penalty = args.act_time_penalty
 
     train_cfg = TrainConfig(
         batch_size=args.batch_size,
@@ -131,6 +150,12 @@ def main():
         flags.append(f"gqa={args.gqa_kv_heads}")
     if args.qk_norm:
         flags.append("qknorm")
+    if args.slerp_t > 0:
+        flags.append(f"slerp={args.slerp_t}")
+    if args.lora_rank > 0:
+        flags.append(f"lora={args.lora_rank}")
+    if args.act_max_steps > 0:
+        flags.append(f"act={args.act_max_steps}")
     suffix = "_" + "_".join(flags) if flags else ""
     out = out + suffix
 
@@ -158,6 +183,8 @@ def main():
         label_smoothing=args.label_smoothing,
         muon_lr=args.muon_lr,
         fim_rate=args.fim_rate,
+        lora_rank=args.lora_rank,
+        lora_alpha=args.lora_alpha,
     )
     plot_loss_curve(history, os.path.join(out, "loss_curve.png"))
 

@@ -34,12 +34,18 @@ def train_model(
     crowfeather: bool = False, lr_schedule: str = "cosine", ema_decay: float = 0.0,
     ohem_fraction: float = 0.0, label_smoothing: float = 0.0,
     muon_lr: float = 0.0, fim_rate: float = 0.0,
+    lora_rank: int = 0, lora_alpha: float = 1.0,
 ):
     os.makedirs(run_dir, exist_ok=True)
     set_seed(train_cfg.seed)
 
     device = torch.device(train_cfg.device)
     model = TinyForecaster(model_cfg).to(device)
+
+    if lora_rank > 0:
+        from .experiments.depth_lora import apply_depth_lora
+        model = apply_depth_lora(model, lora_rank, lora_alpha)
+        model = model.to(device)
 
     from .experiments.input_dropout import apply_input_dropout
     from .experiments.output_reg import output_regularization
@@ -128,6 +134,9 @@ def train_model(
                     loss += mtp_weight * loss_fn(aux_pred, aux_target)
 
             loss = loss + output_regularization(pred, output_reg)
+
+            if hasattr(model, '_ponder_cost') and model._ponder_cost is not None:
+                loss = loss + model._ponder_cost
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip)

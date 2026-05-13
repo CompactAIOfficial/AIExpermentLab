@@ -136,6 +136,10 @@ def main():
     ckpt = torch.load(args.model, map_location=args.device, weights_only=False)
     model_cfg = ModelConfig(**ckpt["cfg"])
     model = TinyForecaster(model_cfg).to(args.device)
+    if model_cfg.lora_rank > 0:
+        from lab.experiments.depth_lora import apply_depth_lora
+        apply_depth_lora(model, rank=model_cfg.lora_rank, alpha=model_cfg.lora_alpha)
+        model.to(args.device)
     model.load_state_dict(ckpt["model"])
 
     run_dir = args.run_dir or os.path.dirname(args.model)

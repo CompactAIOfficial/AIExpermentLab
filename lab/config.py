@@ -16,6 +16,11 @@ class ModelConfig:
     mhc_streams: int = 0
     gqa_kv_heads: int = 0
     qk_norm: bool = False
+    lora_rank: int = 0
+    lora_alpha: float = 1.0
+    act_max_steps: int = 0
+    act_epsilon: float = 0.01
+    act_time_penalty: float = 0.001
 
 
 @dataclass
