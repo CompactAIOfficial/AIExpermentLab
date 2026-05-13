@@ -13,6 +13,9 @@ class ModelConfig:
     dropout: float = 0.1
     output_dim: int = 1
     mtp_horizons: List[int] = field(default_factory=list)
+    mhc_streams: int = 0
+    gqa_kv_heads: int = 0
+    qk_norm: bool = False
 
 
 @dataclass

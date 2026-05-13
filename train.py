@@ -30,7 +30,7 @@ def parse_args():
     p.add_argument("--output", default=None)
     p.add_argument("--seed", type=int, default=42)
 
-    # experiment flags
+    # existing experiment flags
     p.add_argument("--mtp-horizons", type=str, default=None,
                    help="Comma-separated auxiliary horizons, e.g. '2,4,8'")
     p.add_argument("--input-dropout", type=float, default=0.0,
@@ -47,6 +47,18 @@ def parse_args():
                    help="Fraction of hardest examples to train on (0=disabled, 1=all). Online Hard Example Mining.")
     p.add_argument("--label-smoothing", type=float, default=0.0,
                    help="Smoothing epsilon for regression targets (0=disabled). Pulls targets toward batch mean.")
+
+    # Day 2 experiment flags
+    p.add_argument("--muon-lr", type=float, default=0.0,
+                   help="Muon optimizer LR for 2D params (0=disabled). Uses Newton-Schulz orthogonalization.")
+    p.add_argument("--mhc-streams", type=int, default=0,
+                   help="Number of hyper-connection residual streams (0=disabled). Implements Manifold Hyper-Connections.")
+    p.add_argument("--fim-rate", type=float, default=0.0,
+                   help="Fill-In-the-Middle augmentation rate (0=disabled). Masks random spans during training.")
+    p.add_argument("--gqa-kv-heads", type=int, default=0,
+                   help="Number of KV heads for Grouped Query Attention (0=use full n_heads, standard MHA)")
+    p.add_argument("--qk-norm", action="store_true",
+                   help="Apply RMSNorm to Q and K before attention")
     return p.parse_args()
 
 
@@ -61,6 +73,13 @@ def main():
         model_cfg.mtp_horizons = [int(h) for h in args.mtp_horizons.split(",")]
     else:
         model_cfg.mtp_horizons = []
+
+    if args.mhc_streams > 0:
+        model_cfg.mhc_streams = args.mhc_streams
+    if args.gqa_kv_heads > 0:
+        model_cfg.gqa_kv_heads = args.gqa_kv_heads
+    if args.qk_norm:
+        model_cfg.qk_norm = True
 
     train_cfg = TrainConfig(
         batch_size=args.batch_size,
@@ -102,6 +121,16 @@ def main():
         flags.append(f"ohem={args.ohem_fraction}")
     if args.label_smoothing > 0:
         flags.append(f"lsmooth={args.label_smoothing}")
+    if args.muon_lr > 0:
+        flags.append(f"muon={args.muon_lr}")
+    if args.mhc_streams > 0:
+        flags.append(f"mhc={args.mhc_streams}")
+    if args.fim_rate > 0:
+        flags.append(f"fim={args.fim_rate}")
+    if args.gqa_kv_heads > 0:
+        flags.append(f"gqa={args.gqa_kv_heads}")
+    if args.qk_norm:
+        flags.append("qknorm")
     suffix = "_" + "_".join(flags) if flags else ""
     out = out + suffix
 
@@ -127,6 +156,8 @@ def main():
         ema_decay=args.ema_decay,
         ohem_fraction=args.ohem_fraction,
         label_smoothing=args.label_smoothing,
+        muon_lr=args.muon_lr,
+        fim_rate=args.fim_rate,
     )
     plot_loss_curve(history, os.path.join(out, "loss_curve.png"))
 

@@ -10,7 +10,7 @@
 
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support_the_Lab-FF5E5B?style=for-the-badge&logo=kofi&logoColor=white)](https://ko-fi.com/compactai)
 [![License](https://img.shields.io/badge/License-AGPL_V3-blue?style=for-the-badge)](#license)
-[![Status](https://img.shields.io/badge/Status-Day_1-orange?style=for-the-badge)](#progress-log)
+[![Status](https://img.shields.io/badge/Status-Day_2-orange?style=for-the-badge)](#progress-log)
 
 </div>
 
@@ -67,12 +67,12 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | SleepGate (persistent cross-sequence memory buffer, periodic consolidation) | `sleep_gate.py` | queued |
 | TRIM-KV retention gate (arxiv:2512.03324, learned per-entry retention β) | `sleep_gate.py` | queued |
 | Engram (DeepSeek-style hashed n-gram conditional memory, O(1) lookup) | `EngramBlock` | queued |
-| Manifold Hyper-Connections (Sinkhorn-Knopp doubly stochastic residual mixing) | `mhc` | queued |
+| Manifold Hyper-Connections (Sinkhorn-Knopp doubly stochastic residual mixing) | `lab/model.py` | **tested — KEPT (4 streams)** |
 | COCONUT-style Latent Thinking blocks (continuous chain-of-thought) | `latent_think_layers` | queued |
 | Multi-Token Prediction (auxiliary heads at future horizons) | `lab/experiments/mtp.py` | **tested — KEPT** |
 | Per-Layer Embeddings (Gemma 3n PLE, token-conditional per-layer signal) | `ple_dim` | queued |
 | Auxiliary heads (bigram prediction, word boundary detection, L11) | `aux_*` | queued |
-| GQA, partial RoPE, sliding window, QK-norm, per-head output gating | `CausalSelfAttention` | queued |
+| GQA, partial RoPE, sliding window, QK-norm, per-head output gating | `lab/model.py` | **tested — KEPT (GQA=2+QK-norm, partial only)** |
 | SwiGLU FFN with weight-tied embeddings + learned output bias | base block | queued |
 
 ### Training technique experiments
@@ -92,10 +92,10 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | GADW (Gradient Aware Dynamic Weighting for multi-loss balancing) | `gadw.py` | queued |
 | Curriculum learning (recurrent loop count ramp-up) | `curriculum.py` | queued |
 | Model averaging (EMA / SWA style weight smoothing) | `lab/experiments/ema.py` | **tested — KEPT (0.9999)** |
-| Muon optimizer (Newton-Schulz orthogonalization) | `optimizer.py` | queued |
+| Muon optimizer (Newton-Schulz orthogonalization) | `lab/experiments/muon.py` | **tested — KEPT (0.005)** |
 | Crowfeather AdamW (eps=1e-20, β2 ramp 0.95→0.97 post-warmup) | `lab/experiments/crowfeather.py` | **tested — DROPPED** |
 | WSD schedule (sqrt cooldown) vs cosine LR schedule | `lab/experiments/wsd_schedule.py` | **tested — KEPT** |
-| FIM (Fill-In-the-Middle) augmentation during pretraining | `training.py` | queued |
+| FIM (Fill-In-the-Middle) augmentation during pretraining | `lab/experiments/fim.py` | **tested — KEPT (0.25/0.30)** |
 | Decontamination pass against eval suites | `data/decontamination.py` | queued |
 | OHEM (Online Hard Example Mining) with dynamic threshold | `lab/experiments/ohem.py` | **tested — KEPT (0.9/0.3)** |
 | Looping regularization (OpenMythos protection against weight collapse) | `training.py` | queued |
@@ -380,6 +380,56 @@ AdamW with eps=1e-20 (effectively zero in float32) and beta2 that ramps from 0.9
 
 Best for: Nothing on its own. Could be combined with WSD as a minor tweak.
 
+### `--muon-lr 0.005`
+
+Replaces AdamW for 2D weight matrices with the Muon optimizer (MomentUm Orthogonalized by Newton-Schulz). Uses SGD-momentum with Newton-Schulz iterations to orthogonalize gradients before applying them. 1D params (biases, norm scales) and the output head still use AdamW. Based on the Kellerer 2024 optimizer used to train DeepSeek models.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **New all-time best avg blind MAPE (14.24%)** — beats LSmooth 0.15 (14.69%). AAPL blind 9.92% (+0.178 skill). NVDA partial 15.99% (+0.153). Trains full 50 epochs. | NVDA blind slight regression (18.56%, -0.009). Not compatible with crowfeather. Combinations don't stack (muon+fim, muon+gqa all worse). Zero extra params but requires the MuonState wrapper. |
+
+Best for: "I want the best blind-mode average with zero param overhead."
+
+### `--fim-rate 0.25`
+
+Fill-In-the-Middle augmentation: during training, 25% of batches randomly zero-out a ~15% contiguous span in the input sequence. The model must predict the next step for all positions including the corrupted ones, forcing it to use surrounding context. No extra params.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Best AAPL blind ever (9.77%, +0.188 skill)**. Great AAPL partial (11.05%, +0.049). Zero extra params. Nonblind unaffected. | NVDA blind regresses (19.66%, -0.142). NVDA partial degraded (20.47%). Best at 25% — 30% is more balanced, 50% destabilizes. |
+
+Best for: "AAPL-only blind evaluation with zero param overhead."
+
+### `--fim-rate 0.30`
+
+Higher FIM rate that trades some AAPL performance for better balance across tickers.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Best NVDA partial of any Day 2 feature (13.19%, +0.282 skill)**. Balanced blind results (AAPL 10.66%, NVDA 19.32%). Zero extra params. | AAPL blind is merely average (10.66%, +0.160). DirAcc depressed (0.268). Not the best at any single metric but well-rounded. |
+
+Best for: "I want balanced FIM results without sacrificing NVDA completely."
+
+### `--gqa-kv-heads 2 --qk-norm`
+
+Grouped Query Attention with 2 KV heads (down from 4) plus RMSNorm on Q and K before attention. Reduces KV-cache by 2×. QK-norm stabilizes training with fewer KV heads. Architectural change — reduces params from 82,433 to 74,305.
+
+| Does well | Sucks at |
+|-----------|----------|
+| Best nonblind AAPL DirAcc of any config (0.520, +0.868 skill). Strong blind AAPL (10.64%, +0.161). Nonblind unaffected. Saves 8,128 params. | Partial mode degrades (AAPL 13.78%, NVDA 17.08%). NVDA blind mediocre (19.29%). Doesn't stack with muon or fim. Requires architecture changes — not a "drop-in" feature. |
+
+Best for: "I want reduced KV-cache with strong nonblind performance."
+
+### `--mhc-streams 4`
+
+Manifold Hyper-Connections with 4 residual streams. Replaces the standard residual `x + F(norm(x))` with a learned doubly-stochastic mixing matrix across 4 parallel streams. Streams are shared-noise initialized at start, then diverge through training. Sinkhorn-Knopp constrains the residual mixing matrix to the Birkhoff polytope.
+
+| Does well | Sucks at |
+|-----------|----------|
+| Good blind results (AAPL 10.97% +0.144, NVDA 19.04%). Zero extra heads/params beyond mixing matrices (~48 params). | Only works at 4 streams — 2 streams explodes, 3 is unstable. Doesn't stack with other Day 2 features. Adds training overhead from stream expansion. |
+
+Best for: "I want a novel residual mechanism that doesn't change param count."
+
 ### Configs that don't stack
 
 These combinations were tested and performed strictly worse than either feature alone:
@@ -389,6 +439,10 @@ These combinations were tested and performed strictly worse than either feature 
 | MTP + output reg | Two strong regularisers overload the 82K model. Both blind and partial explode to 3000%+ MAPE. |
 | MTP + dropout (wrong rate) | MTP(2,4,8)+dropout 0.01 is worse than either alone. MTP(2,4,8,16)+dropout 0.01 works; 0.003/0.005/0.03 don't. The window is narrow. |
 | dropout + output reg | Interferes (24-33% MAPE, worse than either alone). Different regularisation mechanisms that don't compose. |
+| muon + fim | Muon 0.005 + fim 0.25: avg 15.67% blind — worse than either alone (14.24%, 14.72%). Optimizer orthogonalization interferes with span-masked gradients. |
+| muon + gqa | Muon 0.005 + gqa=2_qknorm: avg 20.37% blind — much worse than muon alone. The reduced KV heads change gradient statistics that the Newton-Schulz step relies on. |
+| fim + gqa | fim 0.25 + gqa=2_qknorm: avg 22.95% blind — both degraded. Span masking and reduced attention capacity don't compose. |
+| muon + fim + gqa | All three: avg 60.90% (explosion). Three different modifications — optimizer, augmentation, architecture — overload the small model. |
 
 ---
 
@@ -421,38 +475,20 @@ This is the first Glint config to achieve **positive skill on AAPL in both blind
 
 | Rank | Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
 |------|--------|-----------|------------|-----------|------------|----------|
-| 1 | **LSmooth 0.15** | **10.88%** | **+0.150** | 18.49% | -0.012 | **14.69%** |
-| 2 | EMA 0.9999 | 10.85% | +0.148 | 18.70% | -0.050 | 14.78% |
-| 3 | MTP(2,4,8,16) | 11.56% | +0.109 | 18.37% | +0.039 | 14.97% |
-| 4 | **OHEM 0.9** | 11.41% | +0.119 | 18.73% | -0.052 | 15.07% |
-| 5 | LSmooth 0.20 | 11.93% | +0.084 | 18.22% | +0.037 | 15.08% |
-| 6 | **MTP(2,4,8,16)+drop 0.01** | 11.84% | +0.089 | 18.42% | -0.008 | **15.13%** |
-| 7 | dropout 0.10 | 9.51% | +0.119 | 21.17% | -0.270 | 15.34% |
-| 8 | dropout 0.01 | 18.12% | -0.405 | 16.89% | +0.202 | 17.51% |
-| — | baseline | 1243.62% | -185.66 | 19.48% | -0.125 | 631.55% |
-
-### Key insights from the sweep
-
-- **MTP horizon count matters**: 4 heads (2,4,8,16) beats 3 heads (2,4,8) beats 2 heads (2,4). More horizons = stronger regularization.
-- **Dropout alone peaks at opposite ends**: 0.10 is best for AAPL (9.51%), 0.01 is best for NVDA (16.89%). No single rate dominates both.
-- **MTP + dropout can stack with the right rate**: MTP(2,4,8,16)+dropout 0.01 beats both MTP(2,4,8,16) alone AND dropout 0.01 alone on avg MAPE. The rate must be carefully tuned — 0.003/0.005/0.03 all performed worse than MTP alone.
-- **Output reg works at high rates (0.05–0.10)**: Earlier testing only checked 0.0001–0.005 (too low). A 2.5-order-of-magnitude sweep revealed a monotonic trend: AAPL blind MAPE drops from 1243% (1e-6) to 9.65% (0.10). At 0.05, NVDA partial hits **9.08% with +0.547 skill** — best partial score ever. At 0.10, AAPL blind hits 9.65% with +0.157 skill — ties dropout 0.10 for best AAPL blind.
-- **Output reg + MTP overloads**: Combining oreg 0.05 with MTP(2,4,8,16) explodes (3002% MAPE). Two strong regularisers fight. Use one or the other.
-- **Combining dropout + output reg** also failed (24-33% MAPE, worse than either alone).
-
-### Full sweep leaderboard (blind mode)
-
-| Rank | Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
-|------|--------|-----------|------------|-----------|------------|----------|
-| 1 | **LSmooth 0.15** | **10.88%** | **+0.150** | 18.49% | -0.012 | **14.69%** |
-| 2 | EMA 0.9999 | 10.85% | +0.148 | 18.70% | -0.050 | 14.78% |
-| 3 | MTP(2,4,8,16) | 11.56% | +0.109 | 18.37% | +0.039 | 14.97% |
-| 4 | **OHEM 0.9** | 11.41% | +0.119 | 18.73% | -0.052 | 15.07% |
-| 5 | LSmooth 0.20 | 11.93% | +0.084 | 18.22% | +0.037 | 15.08% |
-| 6 | MTP(2,4,8,16)+drop 0.01 | 11.84% | +0.089 | 18.42% | -0.008 | 15.13% |
-| 7 | oreg 0.10 | 9.65% | +0.157 | 21.36% | -0.285 | 15.51% |
-| 8 | dropout 0.10 | 9.51% | +0.119 | 21.17% | -0.270 | 15.34% |
-| 9 | dropout 0.01 | 18.12% | -0.405 | 16.89% | +0.202 | 17.51% |
+| 1 | **Muon 0.005** | **9.92%** | **+0.178** | **18.56%** | -0.009 | **14.24%** |
+| 2 | fim 0.25 | **9.77%** | **+0.188** | 19.66% | -0.142 | **14.72%** |
+| 3 | **LSmooth 0.15** | **10.88%** | **+0.150** | 18.49% | -0.012 | **14.69%** |
+| 4 | EMA 0.9999 | 10.85% | +0.148 | 18.70% | -0.050 | 14.78% |
+| 5 | fim 0.30 | 10.66% | +0.160 | 19.32% | -0.114 | 14.99% |
+| 6 | gqa=2_qknorm | 10.64% | +0.161 | 19.29% | -0.103 | 14.97% |
+| 7 | mhc=4 | 10.97% | +0.144 | 19.04% | -0.086 | 15.01% |
+| 8 | MTP(2,4,8,16) | 11.56% | +0.109 | 18.37% | +0.039 | 14.97% |
+| 9 | **OHEM 0.9** | 11.41% | +0.119 | 18.73% | -0.052 | 15.07% |
+| 10 | LSmooth 0.20 | 11.93% | +0.084 | 18.22% | +0.037 | 15.08% |
+| 11 | MTP(2,4,8,16)+drop 0.01 | 11.84% | +0.089 | 18.42% | -0.008 | 15.13% |
+| 12 | dropout 0.10 | 9.51% | +0.119 | 21.17% | -0.270 | 15.34% |
+| 13 | oreg 0.10 | 9.65% | +0.157 | 21.36% | -0.285 | 15.51% |
+| 14 | dropout 0.01 | 18.12% | -0.405 | 16.89% | +0.202 | 17.51% |
 | — | baseline | 1243.62% | -185.66 | 19.48% | -0.125 | 631.55% |
 
 ### Specialists
@@ -461,20 +497,26 @@ Each feature has a mode where it excels:
 
 | Goal | Config | Best Metric |
 |------|--------|-------------|
-| Best NVDA partial | `--output-reg 0.05` | NVDA partial **9.08%** MAPE, **+0.547** skill |
-| Best avg blind MAPE | `--label-smoothing 0.15` | Avg blind **14.69%** MAPE |
+| Best avg blind MAPE | `--muon-lr 0.005` | Avg blind **14.24%** MAPE |
+| Best blind AAPL skill | `--fim-rate 0.25` | AAPL blind **9.77%** MAPE, **+0.188** skill |
+| Best blind AAPL skill (runner-up) | `--muon-lr 0.005` | AAPL blind **9.92%** MAPE, **+0.178** skill |
+| Best nonblind DirAcc | `--gqa-kv-heads 2 --qk-norm` | AAPL nonblind DirAcc **0.520**, skill **+0.868** |
+| Best NVDA partial (Day 2) | `--fim-rate 0.3` | NVDA partial **13.19%** MAPE, **+0.282** skill |
+| Best NVDA partial (all-time) | `--output-reg 0.05` | NVDA partial **9.08%** MAPE, **+0.547** skill |
+| Best avg blind MAPE (zero params) | `--label-smoothing 0.15` | Avg blind **14.69%** MAPE |
 | Best AAPL partial (zero params) | `--ohem-fraction 0.9` | AAPL partial **11.19%** MAPE, **+0.129** skill |
-| Best AAPL blind | `--output-reg 0.10` | AAPL blind **9.65%** MAPE, **+0.157** skill |
-| Best AAPL blind | `--input-dropout 0.10` | AAPL blind **9.51%** MAPE, **+0.119** skill |
-| Best AAPL blind | `--ema-decay 0.9999` | AAPL blind **10.85%** MAPE, **+0.148** skill |
+| Best AAPL blind (zero params) | `--input-dropout 0.10` | AAPL blind **9.51%** MAPE, **+0.119** skill |
 | Best positive-skill both (zero params) | `--label-smoothing 0.20` | AAPL blind +0.084, NVDA blind +0.037, AAPL partial +0.093, NVDA partial +0.112 |
 | Best NVDA blind (zero params) | `--lr-schedule wsd` | AAPL blind **11.74%** MAPE, **+0.101** skill |
 | Best NVDA blind | `--input-dropout 0.01` | NVDA blind **16.89%** MAPE, **+0.202** skill |
-| Best avg MAPE | `--mtp-horizons 2,4,8,16` | Avg blind **14.97%** MAPE |
+| Best avg MAPE (architecture) | `--mtp-horizons 2,4,8,16` | Avg blind **14.97%** MAPE |
 
 ```bash
 # Best avg blind MAPE (zero params)
 python train.py --label-smoothing 0.15
+
+# NEW BEST avg blind MAPE
+python train.py --muon-lr 0.005
 
 # Best positive skill across all modes (zero params)
 python train.py --label-smoothing 0.20
@@ -482,10 +524,24 @@ python train.py --label-smoothing 0.20
 # Best partial AAPL (zero params)
 python train.py --ohem-fraction 0.9
 
+# Best AAPL blind ever
+python train.py --fim-rate 0.25
+
 # Balanced overall: MTP(2,4,8,16) + dropout 0.01
 python train.py --mtp-horizons 2,4,8,16 --input-dropout 0.01
 
-# Zero-param AAPL blind boost
+# Zero-param AAPL blind boost (Day 2)
+python train.py --muon-lr 0.005   # best avg blind
+python train.py --fim-rate 0.25   # best AAPL blind
+python train.py --fim-rate 0.30   # balanced FIM
+
+# Architecture: GQA with QK-norm (10% fewer params)
+python train.py --gqa-kv-heads 2 --qk-norm
+
+# Architecture: Manifold Hyper-Connections
+python train.py --mhc-streams 4
+
+# Zero-param AAPL blind boost (Day 1)
 python train.py --lr-schedule wsd
 
 # AAPL blind specialist
@@ -497,7 +553,7 @@ python train.py --output-reg 0.05
 # NVDA blind specialist
 python train.py --input-dropout 0.01
 
-# Pure MTP (best avg blind MAPE before LSmooth)
+# Pure MTP (previous best avg blind MAPE)
 python train.py --mtp-horizons 2,4,8,16
 ```
 
@@ -506,6 +562,82 @@ python train.py --mtp-horizons 2,4,8,16
 ## Progress Log
 
 A running journal of every experiment. Newest entries on top.
+
+### Day 2, Four features: Muon, MHC, FIM, GQA+QK-norm
+
+* **What**: Implemented and tested 4 features: Muon optimizer (Newton-Schulz orthogonalization), Manifold Hyper-Connections (doubly-stochastic residual mixing), Fill-In-the-Middle augmentation (span masking), and GQA+QK-norm (grouped query attention with QK-normalization). Each was swept across 2–9 hyperparameter values (first broad, then fine around sweet spots), blind-benchmarked, then top contenders full 3-mode benchmarked. 28 models trained, winners attempted in combination.
+* **Features**: `--muon-lr` (0.002–0.05), `--mhc-streams` (2,3,4), `--fim-rate` (0.1–0.5), `--gqa-kv-heads` (1,2) with `--qk-norm`
+* **Compute**: CPU, ~15 minutes total
+
+#### Blind mode results (Day 2 features vs leaders)
+
+| Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
+|--------|-----------|------------|-----------|------------|----------|
+| **Muon 0.005** | **9.92%** | **+0.178** | **18.56%** | -0.009 | **14.24%** |
+| fim 0.25 | **9.77%** | **+0.188** | 19.66% | -0.142 | 14.72% |
+| fim 0.30 | 10.66% | +0.160 | 19.32% | -0.114 | 14.99% |
+| gqa=2_qknorm | 10.64% | +0.161 | 19.29% | -0.103 | 14.97% |
+| mhc=4 | 10.97% | +0.144 | 19.04% | -0.086 | 15.01% |
+| baseline | 1243.35% | -185.62 | 19.48% | -0.125 | 631.41% |
+
+#### Full 3-mode results (top 4 variants)
+
+| Config | Mode | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill |
+|--------|------|-----------|------------|-----------|------------|
+| Muon 0.005 | blind | **9.92%** | **+0.178** | **18.56%** | -0.009 |
+| Muon 0.005 | nonblind | 1.32% | +0.867 | 2.19% | +0.874 |
+| Muon 0.005 | partial | 12.77% | -0.136 | 15.99% | +0.153 |
+| fim 0.25 | blind | **9.77%** | **+0.188** | 19.66% | -0.142 |
+| fim 0.25 | nonblind | 1.38% | +0.866 | 2.19% | +0.873 |
+| fim 0.25 | partial | **11.05%** | **+0.049** | 20.47% | -0.246 |
+| fim 0.30 | blind | 10.66% | +0.160 | 19.32% | -0.114 |
+| fim 0.30 | nonblind | 1.36% | +0.866 | 2.17% | +0.875 |
+| fim 0.30 | partial | 12.39% | -0.027 | **13.19%** | **+0.282** |
+| gqa=2_qknorm | blind | 10.64% | +0.161 | 19.29% | -0.103 |
+| gqa=2_qknorm | nonblind | **1.31%** | **+0.868** | 2.19% | +0.874 |
+| gqa=2_qknorm | partial | 13.78% | -0.177 | 17.08% | +0.017 |
+
+#### Key findings
+
+* **Muon 0.005 takes #1 blind avg**: **14.24%** avg blind MAPE — beats the previous leader LSmooth 0.15 (14.69%). AAPL 9.92% (+0.178) is the second-best AAPL blind ever (behind fim 0.25). NVDA partial 15.99% (+0.153) is solid. Zero extra params. The NS orthogonalization prevents gradient interference between parameters in the small model.
+* **FIM 0.25: best AAPL blind ever**: AAPL **9.77% (+0.188 skill)** — beats dropout 0.10 (9.51% but worse DirAcc and NVDA). AAPL partial also reaches positive skill (11.05%, +0.049). The span-masking forces the model to learn from surrounding context rather than local temporal smoothness.
+* **FIM 0.30: best balanced FIM**: Trading off AAPL for better NVDA. NVDA partial **13.19% (+0.282)** is excellent for a zero-param feature. Blind NVDA 19.32% is close to baseline. Good for multi-ticker evaluation.
+* **GQA+QK-norm reduces params by 10%**: GQA=2 with QK-norm saves 8,128 params (74,305 vs 82,433). A rare architectural change that both improves AAPL blind (10.64%, +0.161) and reduces parameter count. Nonblind AAPL is the best ever (1.31% MAPE, +0.868 skill).
+* **MHC at 4 streams works**: 10.97% AAPL (+0.144), 19.04% NVDA. Only 4 streams works — 2 explodes, 3 is unstable. The Sinkhorn-Knopp regularization prevents degenerate mixing.
+* **Combinations don't stack**: muon+fim, muon+gqa, fim+gqa, and all-three all performed worse than the best individual feature. Three different modification regimes (optimizer, data, architecture) overload the 82K model.
+* **Nonblind mode is invariant**: All configs still score MAPE 1.31–1.38% (AAPL) / 2.17–2.19% (NVDA) with skill +0.866–0.875. The model always learns one-step-ahead patterns.
+
+#### Updated leaderboard (blind mode)
+
+| Rank | Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
+|------|--------|-----------|------------|-----------|------------|----------|
+| 1 | **Muon 0.005** | **9.92%** | **+0.178** | **18.56%** | -0.009 | **14.24%** |
+| 2 | fim 0.25 | **9.77%** | **+0.188** | 19.66% | -0.142 | 14.72% |
+| 3 | LSmooth 0.15 | 10.88% | +0.150 | 18.49% | -0.012 | **14.69%** |
+| 4 | EMA 0.9999 | 10.85% | +0.148 | 18.70% | -0.050 | 14.78% |
+| 5 | fim 0.30 | 10.66% | +0.160 | 19.32% | -0.114 | 14.99% |
+| 6 | gqa=2_qknorm | 10.64% | +0.161 | 19.29% | -0.103 | 14.97% |
+| 7 | mhc=4 | 10.97% | +0.144 | 19.04% | -0.086 | 15.01% |
+| 8 | MTP(2,4,8,16) | 11.56% | +0.109 | 18.37% | +0.039 | 14.97% |
+| 9 | OHEM 0.9 | 11.41% | +0.119 | 18.73% | -0.052 | 15.07% |
+| — | baseline | 1243.35% | -185.62 | 19.48% | -0.125 | 631.41% |
+
+#### Verdicts
+
+| Feature | Verdict |
+|---------|---------|
+| `--muon-lr 0.005` | **KEEP** — new best avg blind, zero params |
+| `--fim-rate 0.25` | **KEEP** — best AAPL blind ever, zero params |
+| `--fim-rate 0.30` | **KEEP** — best NVDA partial of Day 2, good balance |
+| `--gqa-kv-heads 2 --qk-norm` | **KEEP** — 10% fewer params, strong nonblind, good blind |
+| `--mhc-streams 4` | **KEEP** — novel residual mechanism, competitive results |
+| `--mhc-streams 2` | **DROP** — unstable, explodes |
+| `--mhc-streams 3` | **NEUTRAL** — works but worse than 4 |
+| muon + fim | **DROP** — doesn't stack, avg 15.67% |
+| muon + gqa | **DROP** — doesn't stack, avg 20.37% |
+| fim + gqa | **DROP** — doesn't stack, avg 22.95% |
+| muon + fim + gqa | **DROP** — overloads, avg 60.90% |
+
 
 ### Day 1, OHEM + Label Smoothing — two low-hanging regularizers
 

@@ -33,22 +33,33 @@ def train_model(
     input_dropout: float = 0.0, output_reg: float = 0.0, mtp_weight: float = 0.3,
     crowfeather: bool = False, lr_schedule: str = "cosine", ema_decay: float = 0.0,
     ohem_fraction: float = 0.0, label_smoothing: float = 0.0,
+    muon_lr: float = 0.0, fim_rate: float = 0.0,
 ):
     os.makedirs(run_dir, exist_ok=True)
     set_seed(train_cfg.seed)
 
     device = torch.device(train_cfg.device)
     model = TinyForecaster(model_cfg).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=train_cfg.lr, weight_decay=train_cfg.weight_decay)
-    loss_fn = nn.MSELoss()
-    loss_fn_per_sample = nn.MSELoss(reduction="none") if ohem_fraction > 0 else None
 
     from .experiments.input_dropout import apply_input_dropout
     from .experiments.output_reg import output_regularization
 
     has_mtp = bool(model_cfg.mtp_horizons)
 
-    if crowfeather:
+    muon = None
+    if muon_lr > 0:
+        from .experiments.muon import MuonState
+        muon = MuonState(model, muon_lr=muon_lr, adamw_lr=train_cfg.lr,
+                         weight_decay=train_cfg.weight_decay)
+        opt = muon
+    else:
+        opt = torch.optim.AdamW(model.parameters(), lr=train_cfg.lr,
+                                weight_decay=train_cfg.weight_decay)
+
+    loss_fn = nn.MSELoss()
+    loss_fn_per_sample = nn.MSELoss(reduction="none") if ohem_fraction > 0 else None
+
+    if crowfeather and not muon:
         opt.param_groups[0]["eps"] = 1e-20
 
     ema = None
@@ -80,6 +91,10 @@ def train_model(
             yb = yb.to(device)
 
             xb = apply_input_dropout(xb, input_dropout, training=True)
+
+            if fim_rate > 0:
+                from .experiments.fim import apply_fim
+                xb = apply_fim(xb, fim_rate)
 
             if lr_schedule == "wsd":
                 from .experiments.wsd_schedule import get_wsd_lr
@@ -116,9 +131,13 @@ def train_model(
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip)
-            opt.step()
 
-            if crowfeather:
+            if muon is not None:
+                muon.step()
+            else:
+                opt.step()
+
+            if crowfeather and not muon:
                 from .experiments.crowfeather import apply_crowfeather
                 apply_crowfeather(opt, warmup_steps, global_step)
 

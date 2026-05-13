@@ -417,6 +417,18 @@ python train.py --label-smoothing 0.15
 # Train with OHEM
 python train.py --ohem-fraction 0.9
 
+# Day 2 — Muon optimizer (new best avg blind)
+python train.py --muon-lr 0.005
+
+# Day 2 — FIM augmentation
+python train.py --fim-rate 0.25
+
+# Day 2 — Manifold Hyper-Connections
+python train.py --mhc-streams 4
+
+# Day 2 — GQA + QK-norm
+python train.py --gqa-kv-heads 2 --qk-norm
+
 # Benchmark all modes
 python benchmark.py --model runs/.../model.pt --mode blind --no-plot
 python benchmark.py --model runs/.../model.pt --mode nonblind --no-plot
