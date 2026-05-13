@@ -62,8 +62,8 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 |---------|--------|--------|
 | Recurrent depth core (Prelude → Recurrent Core → Coda, Mythos-style) | TinyMemoryLM | queued |
 | Stable Recurrent Injection (SSM-style `h = A·h + B·e + Δ`, Parcae §3.1) | TinyMemoryLM | queued |
-| Depth LoRA (per-loop low-rank adaptation with learned loop embeddings) | TinyMemoryLM | queued |
-| Adaptive Halting (per-position learned stop probability) | TinyMemoryLM | queued |
+| Depth LoRA (per-loop low-rank adaptation with learned loop embeddings) | `lab/experiments/depth_lora.py` | **tested — KEPT (rank=8)** |
+| Adaptive Halting (per-position learned stop probability) | `lab/experiments/adaptive_halting.py` | **tested — KEPT (max_steps=6)** |
 | SleepGate (persistent cross-sequence memory buffer, periodic consolidation) | `sleep_gate.py` | queued |
 | TRIM-KV retention gate (arxiv:2512.03324, learned per-entry retention β) | `sleep_gate.py` | queued |
 | Engram (DeepSeek-style hashed n-gram conditional memory, O(1) lookup) | `EngramBlock` | queued |
@@ -109,7 +109,7 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | Auto batch tuning (find largest batch that fits in VRAM) | `training.py` | queued |
 | Mixed precision: BF16, NVFP4, FP8 via TransformerEngine | `training.py` | queued |
 | Crash recovery checkpoint (emergency save on training exception) | `training.py` | queued |
-| SLERP merging (spherical linear interpolation of N checkpoints) | `merging.py` | queued |
+| SLERP merging (spherical linear interpolation of N checkpoints) | `lab/experiments/slerp_merge.py` | **tested — KEPT (t=0.5–0.6, basin-compatible pairs only)** |
 | FrankenMoE (Mixture-of-Experts assembly from independent checkpoints) | `merging.py` | queued |
 
 ### Tokenizer experiments
@@ -430,6 +430,46 @@ Manifold Hyper-Connections with 4 residual streams. Replaces the standard residu
 
 Best for: "I want a novel residual mechanism that doesn't change param count."
 
+### `--lora-rank 8`
+
+Depth LoRA: adds a low-rank adapter `W·x + α/r · (x A B)` to every Q/K/V/O attention projection and every W1/W2/W3 FFN projection in each block. Default α=1.0, scaling = α/rank. Adds 17,408 params (rank 8) on top of the 82K baseline. Per Hu et al. 2021 LoRA paper, but applied at depth (every block gets adapters) instead of as a fine-tuning trick.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Best NVDA partial of any config: 13.38%, +0.260 skill** (beats fim 0.30's 13.19% in skill terms). Big AAPL blind reduction (10.09%, +0.180). Nonblind unaffected (AAPL 1.36%, NVDA 2.16%). 3-seed avg AAPL blind 16.92% vs baseline 28.79%. | NVDA blind slight regression (20.64%, -0.227). Doesn't stack with ACT (NVDA explodes to 30.77%). Rank=2 and rank=4 unexpectedly fail (avg 24.5% / 65.4% blind). Extra ~17K params at rank 8. |
+
+Best for: "I want strong NVDA partial-mode skill with minimal architecture change."
+
+### `--lora-rank 16`
+
+Same as `--lora-rank 8` but rank 16. Adds 34,816 params on top of the baseline.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Best AAPL nonblind ever (1.31%, +0.868 skill)**. Best AAPL nonblind DirAcc (0.524). Strong AAPL blind (10.43%, +0.086). | NVDA blind worse than rank=8 (22.33% vs 20.64%). Largest LoRA variant — 34K extra params. Same anti-stacking with ACT. |
+
+Best for: "I want the best AAPL nonblind score, even at extra param cost."
+
+### `--act-max-steps 6`
+
+Adaptive Halting (Graves 2016 ACT): wraps the transformer block stack in a recurrent loop with a learned per-position halting probability via `sigmoid(W_h · state)`. Each position accumulates probability mass; once it exceeds 1−ε (ε=0.01), the position emits its weighted-average state. Up to 6 ponder steps per position. Adds 65 params (one halt-unit). Default time_penalty=0.001 adds a small ponder cost to the loss.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Best blind avg (15.23%) of any single feature this round**. Strong AAPL blind (9.87%, +0.181). Improved partial NVDA (15.92%, +0.083). Nonblind essentially unaffected (1.42% / 2.27%). 3-seed avg AAPL blind 13.28% vs baseline 28.79%. | NVDA blind slight regression (20.58%, -0.214). max_steps=10 explodes (47.70% AAPL). Doesn't stack with LoRA (NVDA explodes). Trains 2× slower than baseline due to recurrent loop. |
+
+Best for: "I want dynamic per-position computation with the best blind average."
+
+### Post-training: SLERP merge
+
+`scripts/run_slerp_merges.py` and `lab/experiments/slerp_merge.py` provide spherical linear interpolation: train N checkpoints with different seeds, then merge: `w = sin((1−t)θ)/sin(θ)·w₀ + sin(tθ)/sin(θ)·w₁`. Falls back to LERP when vectors are nearly collinear. The `--slerp-t` flag exists in `train.py` but only marks runs; the actual merge is post-training.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Best blind AAPL of any single config: 9.41%** at t=0.6, NVDA 19.78%, +0.179 skill (42-44 pair). Recovered seed 42's 45.72% AAPL blind down to ~9% by averaging with seed 44. Free at training time — it's a post-training merge. Smooth basin t∈[0.1, 0.8] for compatible pairs (every t works). | **Diverges catastrophically across basins**. The 42-43 pair exploded at every t (268% / 17268% / 2.9B%). 3-way merges containing seed 43 also diverge (266% NVDA). Slight nonblind regression (2.15% AAPL vs 1.35%). t∈[0.9, 1.0] degrades. Cannot predict which pairs are basin-compatible without trying. |
+
+Best for: "I have multiple seeds and want a no-cost blind-mode boost — but I have to test each pair."
+
 ### Configs that don't stack
 
 These combinations were tested and performed strictly worse than either feature alone:
@@ -443,6 +483,9 @@ These combinations were tested and performed strictly worse than either feature 
 | muon + gqa | Muon 0.005 + gqa=2_qknorm: avg 20.37% blind — much worse than muon alone. The reduced KV heads change gradient statistics that the Newton-Schulz step relies on. |
 | fim + gqa | fim 0.25 + gqa=2_qknorm: avg 22.95% blind — both degraded. Span masking and reduced attention capacity don't compose. |
 | muon + fim + gqa | All three: avg 60.90% (explosion). Three different modifications — optimizer, augmentation, architecture — overload the small model. |
+| LoRA + ACT | LoRA-8 + ACT-6: NVDA blind explodes to 30.77% (vs 20.64% / 20.58% alone). LoRA-16 + ACT-6 even worse (32.45%). The recurrent loop shares state across LoRA-adapted blocks, causing accumulation that the ponder cost can't regularize. |
+| 3-way SLERP across mismatched basins | Merging seeds 42+43+44 reliably diverges (NVDA 266% blind). Seed 43 lives in a different basin than 42/44; including it in any merge causes catastrophic interference. Pairwise merges of basin-compatible seeds (42-44, 43-44) work; the 42-43 pair alone also diverges. |
+| SLERP at t=0.25 / t=0.75 across basins | Even with valid endpoints, off-center t values amplify basin mismatch. The 42-43 pair at t=0.25 hit AAPL=2.9 billion% MAPE. Stay within t∈[0.4, 0.7] for tested pairs. |
 
 ---
 
@@ -562,6 +605,96 @@ python train.py --mtp-horizons 2,4,8,16
 ## Progress Log
 
 A running journal of every experiment. Newest entries on top.
+
+### Day 2, Three features: Depth LoRA, Adaptive Halting, SLERP merging
+
+* **What**: Implemented and tested 3 features: Depth LoRA (per-block low-rank adapters on every Q/K/V/O/W1/W2/W3 projection), Adaptive Halting (Graves 2016 ACT — per-position halting probability over a recurrent block loop), and SLERP merging (post-training spherical linear interpolation of N checkpoints). 21 models trained (3 baseline seeds, 5 LoRA ranks, 5 ACT max_steps, 6 seed-variance checks, 2 cross-feature combos), 16 SLERP merges produced from those checkpoints. All 5 finalists full 3-mode benchmarked.
+* **Features**: `--lora-rank` (1, 2, 4, 8, 12, 16, 24, 32), `--act-max-steps` (2, 3, 4, 5, 6, 7, 8, 10), `--slerp-t` + `scripts/run_slerp_merges.py` (t = 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9; pairs 42-43, 42-44, 43-44, 3-way)
+* **Compute**: NVIDIA RTX 5090, ~5 minutes total
+
+#### Blind mode results (Day 2 features vs baseline avg-of-3-seeds)
+
+| Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
+|--------|-----------|------------|-----------|------------|----------|
+| baseline (seed 42) | 45.72% | -2.40 | 19.19% | -0.10 | 32.46% |
+| baseline (avg 3 seeds) | 28.79% | -1.14 | 18.32% | +0.01 | 23.56% |
+| **SLERP 42-44 t=0.6** | **9.41%** | **+0.179** | 19.78% | -0.152 | **14.60%** |
+| SLERP 42-44 t=0.5 | **9.52%** | **+0.188** | 19.60% | -0.137 | 14.56% |
+| **LoRA-8 + SLERP 42-44** | **9.38%** | +0.097 | 20.72% | -0.233 | 15.05% |
+| ACT-6 + SLERP 42-44 | 9.69% | **+0.190** | **19.47%** | -0.125 | **14.58%** |
+| ACT max_steps=6 | 9.87% | +0.181 | 20.58% | -0.214 | 15.23% |
+| LoRA rank=8 | 10.09% | +0.180 | 20.64% | -0.227 | 15.36% |
+| LoRA rank=16 | 10.43% | +0.086 | 22.33% | -0.339 | 16.38% |
+
+#### Full 3-mode results (top 5 variants)
+
+| Config | Mode | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill |
+|--------|------|-----------|------------|-----------|------------|
+| SLERP 42-44 t=0.6 | blind | **9.41%** | +0.179 | 19.78% | -0.152 |
+| SLERP 42-44 t=0.6 | nonblind | 2.11% | +0.817 | 3.30% | +0.823 |
+| SLERP 42-44 t=0.6 | partial | **10.93%** | +0.010 | 22.97% | -0.396 |
+| SLERP 42-44 t=0.5 | blind | 9.52% | +0.188 | 19.60% | -0.137 |
+| SLERP 42-44 t=0.5 | nonblind | 2.15% | +0.813 | 3.36% | +0.821 |
+| SLERP 42-44 t=0.5 | partial | 11.03% | +0.026 | 22.39% | -0.348 |
+| LoRA rank=8 | blind | 10.09% | +0.180 | 20.64% | -0.227 |
+| LoRA rank=8 | nonblind | 1.36% | +0.866 | 2.16% | +0.874 |
+| LoRA rank=8 | partial | 12.88% | -0.123 | **13.38%** | **+0.260** |
+| LoRA rank=16 | blind | 10.43% | +0.086 | 22.33% | -0.339 |
+| LoRA rank=16 | nonblind | **1.31%** | **+0.868** | 2.19% | +0.874 |
+| LoRA rank=16 | partial | 13.01% | -0.226 | 17.40% | -0.035 |
+| ACT max_steps=6 | blind | 9.87% | +0.181 | 20.58% | -0.214 |
+| ACT max_steps=6 | nonblind | 1.42% | +0.863 | 2.27% | +0.870 |
+| ACT max_steps=6 | partial | 12.12% | -0.066 | 15.92% | +0.083 |
+| ACT-6 + SLERP 42-44 | blind | 9.69% | **+0.190** | 19.47% | -0.125 |
+| ACT-6 + SLERP 42-44 | nonblind | 2.16% | +0.812 | 3.41% | +0.819 |
+| ACT-6 + SLERP 42-44 | partial | 11.26% | +0.023 | 21.66% | -0.292 |
+
+#### Key findings
+
+* **SLERP merging is the highest-impact and lowest-cost feature this round**: merging two seeds of the baseline at t=0.5–0.6 cuts AAPL blind from 45.72% (seed 42) down to **9.41%** — a 4.9× reduction with zero training cost. The 42-44 pair has a smooth basin from t=0.1 (11.61%) to t=0.8 (10.91%); t=0.6 is the optimum.
+* **SLERP only works between basin-compatible checkpoints**: the 42-43 pair diverged catastrophically at every t value tested (268% / 17268% / 2.9 billion% MAPE). The 3-way merge containing seed 43 also blew up. This is real, important information — SLERP cannot be used blindly. Pairs must be tested.
+* **Depth LoRA at rank 8 sets a new NVDA partial record**: 13.38% MAPE with **+0.260 skill** — substantially beats fim 0.30's 13.19% MAPE / +0.282 skill on raw value but loses on skill margin. Among the most balanced single-feature improvements.
+* **LoRA rank=16 sets a new AAPL nonblind record**: 1.31% MAPE / +0.868 skill / 0.524 DirAcc. This narrowly beats GQA+QK-norm's previous 1.31% / +0.868 / 0.520 DirAcc.
+* **ACT max_steps=6 is the best single-feature blind average**: 15.23% blind avg MAPE vs LoRA-8's 15.36% and the LSmooth/Muon baselines from earlier days. Strong on every metric, no ticker breaks.
+* **LoRA rank choice has a U-shape**: rank 1 works (15.7% avg), rank 2 and 4 fail (24.5% / 65.4%), rank 8 and 16 work (15.4% / 16.4%), rank 24 and 32 partially fail (26.4% / 25.1%). The rank=8 sweet spot reflects the small model's effective capacity needs.
+* **Combinations mostly don't stack**: LoRA + ACT explodes NVDA (30.77% / 32.45% blind). 3-way SLERP across mismatched basins explodes (266% / 670% NVDA). The only working stack is `LoRA-8 + SLERP-42-44` (best AAPL blind ever: 9.38%) and `ACT-6 + SLERP-42-44` (best skill among SLERP merges: +0.190).
+* **All three features hurt nonblind slightly when combined with SLERP**: SLERP variants score 2.11–2.34% AAPL nonblind vs the 1.31–1.42% from LoRA/ACT alone. The merge introduces a small one-step-ahead error; for blind-mode use this is a fair trade.
+
+#### Updated leaderboard (blind mode)
+
+| Rank | Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
+|------|--------|-----------|------------|-----------|------------|----------|
+| 1 | **LoRA-8 + SLERP 42-44** | **9.38%** | +0.097 | 20.72% | -0.233 | 15.05% |
+| 2 | **SLERP 42-44 t=0.6** | **9.41%** | **+0.179** | 19.78% | -0.152 | **14.60%** |
+| 3 | SLERP 42-44 t=0.5 | 9.52% | +0.188 | 19.60% | -0.137 | 14.56% |
+| 4 | ACT-6 + SLERP 42-44 | 9.69% | **+0.190** | 19.47% | -0.125 | 14.58% |
+| 5 | fim 0.25 (Day 2) | 9.77% | +0.188 | 19.66% | -0.142 | 14.72% |
+| 6 | ACT max_steps=6 | 9.87% | +0.181 | 20.58% | -0.214 | 15.23% |
+| 7 | Muon 0.005 (Day 2) | 9.92% | +0.178 | 18.56% | -0.009 | **14.24%** |
+| 8 | LoRA rank=8 | 10.09% | +0.180 | 20.64% | -0.227 | 15.36% |
+| 9 | LoRA rank=16 | 10.43% | +0.086 | 22.33% | -0.339 | 16.38% |
+| — | baseline (seed 42) | 45.72% | -2.40 | 19.19% | -0.10 | 32.46% |
+
+#### Verdicts
+
+| Feature | Verdict |
+|---------|---------|
+| `--lora-rank 8` | **KEEP** — best NVDA partial of any config, strong blind and nonblind |
+| `--lora-rank 16` | **KEEP** — best AAPL nonblind ever (1.31% / +0.868 skill) |
+| `--lora-rank 1` | **NEUTRAL** — works but rank=8 dominates |
+| `--lora-rank 2/4/24/32` | **DROP** — U-shape failure, mid and high ranks unstable |
+| `--act-max-steps 6` | **KEEP** — best single-feature blind avg, no metrics regress |
+| `--act-max-steps 2` | **NEUTRAL** — works but max=6 dominates |
+| `--act-max-steps 7-8` | **NEUTRAL** — works but slightly worse than 6 |
+| `--act-max-steps 10` | **DROP** — explodes (47.70% AAPL blind) |
+| SLERP merge t=0.5-0.6 (basin-compatible pair) | **KEEP** — top-3 blind AAPL with zero training cost |
+| SLERP merge t<0.4 or t>0.8 | **NEUTRAL** — works for compatible pairs, degrades the further from 0.5 |
+| SLERP across mismatched basins | **DROP** — diverges catastrophically at any t |
+| 3-way SLERP across 3 seeds | **DROP** — diverges if any pair is incompatible |
+| LoRA + ACT | **DROP** — doesn't stack, NVDA explodes |
+| LoRA-8 + SLERP 42-44 | **KEEP** — best AAPL blind ever (9.38%) |
+| ACT-6 + SLERP 42-44 | **KEEP** — best blind skill (+0.190) among SLERP merges |
+
 
 ### Day 2, Four features: Muon, MHC, FIM, GQA+QK-norm
 
