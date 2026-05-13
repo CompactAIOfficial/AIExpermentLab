@@ -411,6 +411,12 @@ python train.py --lr-schedule wsd
 # Train with EMA
 python train.py --ema-decay 0.9999
 
+# Train with label smoothing
+python train.py --label-smoothing 0.15
+
+# Train with OHEM
+python train.py --ohem-fraction 0.9
+
 # Benchmark all modes
 python benchmark.py --model runs/.../model.pt --mode blind --no-plot
 python benchmark.py --model runs/.../model.pt --mode nonblind --no-plot

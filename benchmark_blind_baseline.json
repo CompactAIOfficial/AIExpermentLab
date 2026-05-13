@@ -1,0 +1,26 @@
+{
+  "AAPL": {
+    "n_steps": 250,
+    "mae": 3260.716796875,
+    "rmse": 6115.68701171875,
+    "mape_pct": 1243.363037109375,
+    "directional_accuracy": 0.524,
+    "naive_flat_mae": 28.430953979492188,
+    "naive_flat_rmse": 32.77085876464844,
+    "skill_vs_naive_rmse": -185.61967498746316,
+    "mode": "blind",
+    "partial_interval": null
+  },
+  "NVDA": {
+    "n_steps": 250,
+    "mae": 32.03197479248047,
+    "rmse": 38.19336700439453,
+    "mape_pct": 19.475313186645508,
+    "directional_accuracy": 0.332,
+    "naive_flat_mae": 29.16773796081543,
+    "naive_flat_rmse": 33.95110321044922,
+    "skill_vs_naive_rmse": -0.124952163340591,
+    "mode": "blind",
+    "partial_interval": null
+  }
+}

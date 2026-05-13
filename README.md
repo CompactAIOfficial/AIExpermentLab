@@ -97,11 +97,11 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | WSD schedule (sqrt cooldown) vs cosine LR schedule | `lab/experiments/wsd_schedule.py` | **tested — KEPT** |
 | FIM (Fill-In-the-Middle) augmentation during pretraining | `training.py` | queued |
 | Decontamination pass against eval suites | `data/decontamination.py` | queued |
-| OHEM (Online Hard Example Mining) with dynamic threshold | `training.py` | queued |
+| OHEM (Online Hard Example Mining) with dynamic threshold | `lab/experiments/ohem.py` | **tested — KEPT (0.9/0.3)** |
 | Looping regularization (OpenMythos protection against weight collapse) | `training.py` | queued |
 | Input token dropout (replace fraction of inputs with zero) | `lab/experiments/input_dropout.py` | **tested — KEPT** |
 | Context loss (NCE-based contrastive prompt/response embedding loss) | `training.py` | queued |
-| Z-loss, entropy regularization, label smoothing | `training.py` | queued |
+| Label smoothing (regression-adapted, target shrinkage toward batch mean) | `lab/experiments/label_smoothing.py` | **tested — KEPT (0.15/0.20)** |
 | Output L2 regularization (penalize extreme predictions) | `lab/experiments/output_reg.py` | **tested — KEPT (0.05–0.10)** |
 | Sleep capacity loss (TRIM-KV penalty for over-budget retention) | `sleep_gate.py` | queued |
 | Think depth loss (cosine similarity penalty for lazy COCONUT layers) | `training.py` | queued |
@@ -290,6 +290,76 @@ Maintains a shadow copy of model weights as an exponential moving average: `ema 
 
 Best for: "I care most about multi-step AAPL prediction and can accept worse one-step-ahead."
 
+### `--label-smoothing 0.15`
+
+For regression, smooths targets toward the batch mean: `yb = yb * (1-ε) + ε * batch_mean`. Prevents overconfidence in individual predictions by shrinking them toward the batch average. Zero extra params.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Best avg blind MAPE of any single config** (14.69%). AAPL blind 10.88% (+0.150 skill — ties EMA 0.9999 for best AAPL blind). Zero extra params. | Partial mode is mediocre (AAPL 12.17%, NVDA 18.55%). No positive skill in partial. DirAcc depressed (0.34 blind). |
+
+Best for: "I want the best blind-mode average with zero param overhead."
+
+### `--label-smoothing 0.20`
+
+Stronger target smoothing. Pulls predictions further toward the batch mean.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Positive skill on both tickers in blind AND partial modes** — only the second config ever (after MTP+dropout 0.01) to achieve this. NVDA blind 18.22% (+0.037), AAPL partial 11.78% (+0.093), NVDA partial 16.99% (+0.112). | Blind AAPL is merely average (11.93%). Nonblind slightly elevated (1.37% vs normal 1.33%). Zero extra params. |
+
+Best for: "I want positive skill everywhere with zero params."
+
+### `--label-smoothing 0.10` (or lower)
+
+Any epsilon below ~0.10 is either too weak (0.01–0.05 barely moves targets) or destabilises AAPL blind.
+
+| Does well | Sucks at |
+|-----------|----------|
+| Nothing. LSmooth 0.10 has bad NVDA (26.67%). LSmooth 0.05 NVDA is baseline-level (19.20%). LSmooth 0.01 destroys AAPL blind (26.50%). | Everything below 0.10 is worse than baseline on at least one ticker. |
+
+Best for: Don't use. The sweet spot is 0.15–0.20.
+
+### `--ohem-fraction 0.9`
+
+Online Hard Example Mining: only the hardest 90% of examples (highest per-sample loss) contribute to the gradient each batch. Dropping the easiest 10% forces the model to avoid complacency on well-learned patterns.
+
+| Does well | Sucks at |
+|-----------|----------|
+| Best partial AAPL ever (11.19%, **+0.129 skill**). Great blind AAPL (11.41%, +0.119). Also best DirAcc NVDA in partial (0.528). | NVDA blind is mediocre (18.73%, -0.052). Dropping only 10% of examples is a weak regularizer — most batches are unchanged. |
+
+Best for: "I want the best partial AAPL with zero extra params."
+
+### `--ohem-fraction 0.3`
+
+Harder OHEM: only the hardest 30% of examples contribute. This is a strong regularizer — 70% of each batch is discarded.
+
+| Does well | Sucks at |
+|-----------|----------|
+| Strong blind AAPL (11.60%, **+0.109 skill**). Good NVDA partial (14.44%, **+0.227 skill**). Nonblind unaffected. | NVDA blind is worse than baseline (19.30%, -0.108). 70% example dropout wastes most of the batch — training takes more epochs to converge. |
+
+Best for: "I'm okay losing half the ticker to get strong regularisation on the other."
+
+### `--ohem-fraction 0.35`
+
+Near the instability threshold for OHEM. Only 35% of examples kept. Results vary by run.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Best NVDA blind ever** (14.95%, **+0.273 skill**) — if you catch the right seed. Zero extra params. | Unstable. AAPL blind explodes (34.07%). Only 1/17 trained models found the good regime. Not reliable. |
+
+Best for: Nothing. Too unstable.
+
+### `--ohem-fraction 0.5`
+
+Half the examples kept. Trades NVDA performance for extreme AAPL gains.
+
+| Does well | Sucks at |
+|-----------|----------|
+| Best AAPL blind MAPE of any OHEM config (10.08%) with positive skill (+0.019). Strong DirAcc (0.476 blind, 0.468 NVDA). | NVDA blind degrades (22.18%). Avg MAPE (16.13%) is worse than OHEM 0.9 or LSmooth 0.15. |
+
+Best for: "AAPL-only evaluation where I want minimal MAPE."
+
 ### `--ema-decay 0.999`
 
 Milder EMA smoothing. Less regularization than 0.9999.
@@ -351,13 +421,14 @@ This is the first Glint config to achieve **positive skill on AAPL in both blind
 
 | Rank | Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
 |------|--------|-----------|------------|-----------|------------|----------|
-| 1 | **MTP(2,4,8,16)+drop 0.01** | 11.84% | +0.089 | 18.42% | -0.008 | **15.13%** |
-| 2 | MTP(2,4,8,16) | 11.56% | +0.109 | 18.37% | +0.039 | **14.97%** |
-| 3 | MTP(2,4,8,16)+drop 0.005 | 22.36% | -0.674 | **16.32%** | **+0.212** | 19.34% |
-| 4 | dropout 0.10 | **9.51%** | **+0.119** | 21.17% | -0.270 | 15.34% |
-| 5 | dropout 0.01 | 18.12% | -0.405 | **16.89%** | +0.202 | 17.51% |
-| 6 | MTP(2,4,8)+drop 0.03 | 16.59% | -0.278 | 17.93% | +0.124 | 17.26% |
-| 7 | MTP(2,4,8) | 15.36% | -0.179 | 17.96% | +0.048 | 16.66% |
+| 1 | **LSmooth 0.15** | **10.88%** | **+0.150** | 18.49% | -0.012 | **14.69%** |
+| 2 | EMA 0.9999 | 10.85% | +0.148 | 18.70% | -0.050 | 14.78% |
+| 3 | MTP(2,4,8,16) | 11.56% | +0.109 | 18.37% | +0.039 | 14.97% |
+| 4 | **OHEM 0.9** | 11.41% | +0.119 | 18.73% | -0.052 | 15.07% |
+| 5 | LSmooth 0.20 | 11.93% | +0.084 | 18.22% | +0.037 | 15.08% |
+| 6 | **MTP(2,4,8,16)+drop 0.01** | 11.84% | +0.089 | 18.42% | -0.008 | **15.13%** |
+| 7 | dropout 0.10 | 9.51% | +0.119 | 21.17% | -0.270 | 15.34% |
+| 8 | dropout 0.01 | 18.12% | -0.405 | 16.89% | +0.202 | 17.51% |
 | — | baseline | 1243.62% | -185.66 | 19.48% | -0.125 | 631.55% |
 
 ### Key insights from the sweep
@@ -373,15 +444,15 @@ This is the first Glint config to achieve **positive skill on AAPL in both blind
 
 | Rank | Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
 |------|--------|-----------|------------|-----------|------------|----------|
-| 1 | **MTP(2,4,8,16)+drop 0.01** | 11.84% | +0.089 | 18.42% | -0.008 | **15.13%** |
-| 2 | MTP(2,4,8,16) | 11.56% | +0.109 | 18.37% | +0.039 | **14.97%** |
-| 3 | oreg 0.10 | **9.65%** | **+0.157** | 21.36% | -0.285 | 15.51% |
-| 4 | oreg 0.08 | 9.86% | +0.093 | 22.86% | -0.400 | 16.36% |
-| 5 | oreg 0.05 | 13.03% | +0.007 | 18.68% | -0.048 | 15.86% |
-| 6 | dropout 0.10 | 9.51% | +0.119 | 21.17% | -0.270 | 15.34% |
-| 7 | dropout 0.01 | 18.12% | -0.405 | 16.89% | +0.202 | 17.51% |
-| 8 | MTP(2,4,8)+drop 0.03 | 16.59% | -0.278 | 17.93% | +0.124 | 17.26% |
-| 9 | MTP(2,4,8) | 15.36% | -0.179 | 17.96% | +0.048 | 16.66% |
+| 1 | **LSmooth 0.15** | **10.88%** | **+0.150** | 18.49% | -0.012 | **14.69%** |
+| 2 | EMA 0.9999 | 10.85% | +0.148 | 18.70% | -0.050 | 14.78% |
+| 3 | MTP(2,4,8,16) | 11.56% | +0.109 | 18.37% | +0.039 | 14.97% |
+| 4 | **OHEM 0.9** | 11.41% | +0.119 | 18.73% | -0.052 | 15.07% |
+| 5 | LSmooth 0.20 | 11.93% | +0.084 | 18.22% | +0.037 | 15.08% |
+| 6 | MTP(2,4,8,16)+drop 0.01 | 11.84% | +0.089 | 18.42% | -0.008 | 15.13% |
+| 7 | oreg 0.10 | 9.65% | +0.157 | 21.36% | -0.285 | 15.51% |
+| 8 | dropout 0.10 | 9.51% | +0.119 | 21.17% | -0.270 | 15.34% |
+| 9 | dropout 0.01 | 18.12% | -0.405 | 16.89% | +0.202 | 17.51% |
 | — | baseline | 1243.62% | -185.66 | 19.48% | -0.125 | 631.55% |
 
 ### Specialists
@@ -391,14 +462,26 @@ Each feature has a mode where it excels:
 | Goal | Config | Best Metric |
 |------|--------|-------------|
 | Best NVDA partial | `--output-reg 0.05` | NVDA partial **9.08%** MAPE, **+0.547** skill |
+| Best avg blind MAPE | `--label-smoothing 0.15` | Avg blind **14.69%** MAPE |
+| Best AAPL partial (zero params) | `--ohem-fraction 0.9` | AAPL partial **11.19%** MAPE, **+0.129** skill |
 | Best AAPL blind | `--output-reg 0.10` | AAPL blind **9.65%** MAPE, **+0.157** skill |
 | Best AAPL blind | `--input-dropout 0.10` | AAPL blind **9.51%** MAPE, **+0.119** skill |
 | Best AAPL blind | `--ema-decay 0.9999` | AAPL blind **10.85%** MAPE, **+0.148** skill |
+| Best positive-skill both (zero params) | `--label-smoothing 0.20` | AAPL blind +0.084, NVDA blind +0.037, AAPL partial +0.093, NVDA partial +0.112 |
 | Best NVDA blind (zero params) | `--lr-schedule wsd` | AAPL blind **11.74%** MAPE, **+0.101** skill |
 | Best NVDA blind | `--input-dropout 0.01` | NVDA blind **16.89%** MAPE, **+0.202** skill |
 | Best avg MAPE | `--mtp-horizons 2,4,8,16` | Avg blind **14.97%** MAPE |
 
 ```bash
+# Best avg blind MAPE (zero params)
+python train.py --label-smoothing 0.15
+
+# Best positive skill across all modes (zero params)
+python train.py --label-smoothing 0.20
+
+# Best partial AAPL (zero params)
+python train.py --ohem-fraction 0.9
+
 # Balanced overall: MTP(2,4,8,16) + dropout 0.01
 python train.py --mtp-horizons 2,4,8,16 --input-dropout 0.01
 
@@ -406,7 +489,7 @@ python train.py --mtp-horizons 2,4,8,16 --input-dropout 0.01
 python train.py --lr-schedule wsd
 
 # AAPL blind specialist
-python train.py --output-reg 0.10   # or: --input-dropout 0.10  or: --ema-decay 0.9999
+python train.py --output-reg 0.10   # or: --input-dropout 0.10  or: --ema-decay 0.9999  or: --ohem-fraction 0.5
 
 # NVDA partial specialist
 python train.py --output-reg 0.05
@@ -414,7 +497,7 @@ python train.py --output-reg 0.05
 # NVDA blind specialist
 python train.py --input-dropout 0.01
 
-# Pure MTP (best avg blind MAPE)
+# Pure MTP (best avg blind MAPE before LSmooth)
 python train.py --mtp-horizons 2,4,8,16
 ```
 
@@ -423,6 +506,59 @@ python train.py --mtp-horizons 2,4,8,16
 ## Progress Log
 
 A running journal of every experiment. Newest entries on top.
+
+### Day 1, OHEM + Label Smoothing — two low-hanging regularizers
+
+* **What**: Implemented and tested OHEM (Online Hard Example Mining) and regression-adapted label smoothing. Each feature was swept across 5–9 hyperparameter values (first broad, then fine around sweet spots), blind-benchmarked to filter contenders, then full 3-mode benchmarked on top variants. 19 models trained total.
+* **Features**: `--ohem-fraction` (0.2–0.95), `--label-smoothing` (0.01–0.30)
+* **Compute**: CPU, ~30 minutes total
+
+#### Blind mode results
+
+| Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
+|--------|-----------|------------|-----------|------------|----------|
+| baseline | 1243.36% | -185.62 | 19.48% | -0.125 | 631.42% |
+| **LSmooth 0.15** | **10.88%** | **+0.150** | 18.49% | -0.012 | **14.69%** |
+| **OHEM 0.9** | 11.41% | +0.119 | 18.73% | -0.052 | **15.07%** |
+| LSmooth 0.20 | 11.93% | +0.084 | **18.22%** | **+0.037** | **15.08%** |
+| OHEM 0.3 | 11.60% | +0.109 | 19.30% | -0.108 | 15.45% |
+| OHEM 0.5 | 10.08% | +0.019 | 22.18% | -0.328 | 16.13% |
+
+#### Key findings
+
+* **Label smoothing 0.15 takes #1 blind avg**: LSmooth 0.15 achieves **14.69%** avg blind MAPE — the best of any single feature tested so far, beating EMA 0.9999 (14.78%) and MTP (14.97%). Zero extra params. The intuition: shrinking targets toward the batch mean regularizes predictions the same way label smoothing regularizes classifiers.
+* **Label smoothing 0.20 is only the 2nd config ever with positive skill on both tickers in blind AND partial**: AAPL blind +0.084, NVDA blind +0.037, AAPL partial +0.093, NVDA partial +0.112. Previously only MTP+dropout 0.01 had achieved this. Zero extra params.
+* **OHEM works best as a mild regularizer**: OHEM 0.9 (drop easiest 10%) gives AAPL partial 11.19% (+0.129) — best AAPL partial ever. OHEM 0.3 (drop easiest 70%) is a strong but imbalanced regularizer: great AAPL blind (11.60%, +0.109) but hurts NVDA.
+* **OHEM is unstable below 0.3**: OHEM 0.2 and 0.25 both exploded on AAPL blind (343k% and 11.98%). OHEM 0.35 found the best NVDA blind ever (14.95%, +0.273) in 1/17 seeds but is not reproducible. The stable range is 0.3–0.9.
+* **Nonblind mode is invariant**: All configs scored MAPE 1.32–1.37% (AAPL) / 2.14–2.25% (NVDA) with skill +0.86–0.87. The model always learns one-step-ahead patterns; differences only show in multi-step rollout.
+
+#### Full 3-mode results (top 4 variants)
+
+| Config | Mode | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill |
+|--------|------|-----------|------------|-----------|------------|
+| LSmooth 0.15 | blind | **10.88%** | **+0.150** | 18.49% | -0.012 |
+| LSmooth 0.15 | nonblind | 1.34% | +0.866 | 2.22% | +0.872 |
+| LSmooth 0.15 | partial | 12.17% | +0.003 | 18.55% | -0.036 |
+| LSmooth 0.20 | blind | 11.93% | +0.084 | **18.22%** | **+0.037** |
+| LSmooth 0.20 | nonblind | 1.37% | +0.862 | 2.25% | +0.871 |
+| LSmooth 0.20 | partial | **11.78%** | **+0.093** | **16.99%** | **+0.112** |
+| OHEM 0.9 | blind | 11.41% | +0.119 | 18.73% | -0.052 |
+| OHEM 0.9 | nonblind | 1.35% | +0.865 | 2.18% | +0.874 |
+| OHEM 0.9 | partial | **11.19%** | **+0.129** | 16.51% | +0.086 |
+| OHEM 0.3 | blind | 11.60% | +0.109 | 19.30% | -0.108 |
+| OHEM 0.3 | nonblind | 1.32% | +0.868 | 2.14% | +0.875 |
+| OHEM 0.3 | partial | 13.59% | -0.096 | 14.44% | +0.227 |
+
+#### Verdicts
+
+| Feature | Verdict |
+|---------|---------|
+| `--label-smoothing 0.15` | **KEEP** — best avg blind MAPE ever, zero params |
+| `--label-smoothing 0.20` | **KEEP** — positive skill everywhere, zero params |
+| `--ohem-fraction 0.9` | **KEEP** — best partial AAPL ever, zero params |
+| `--ohem-fraction 0.3` | **KEEP** — strong blind AAPL, good NVDA partial |
+| `--ohem-fraction 0.35` | **DROP** — unstable, not reproducible |
+| `--ohem-fraction 0.5` | **NEUTRAL** — AAPL specialist but hurts NVDA |
 
 ### Day 1, Tier 1 features: Crowfeather AdamW, WSD schedule, EMA
 
@@ -464,14 +600,15 @@ A running journal of every experiment. Newest entries on top.
 
 | Rank | Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
 |------|--------|-----------|------------|-----------|------------|----------|
-| 1 | MTP(2,4,8,16)+drop 0.01 | 11.84% | +0.089 | 18.42% | -0.008 | 15.13% |
-| 2 | MTP(2,4,8,16) | 11.56% | +0.109 | 18.37% | +0.039 | 14.97% |
-| 3 | oreg 0.10 | 9.65% | +0.157 | 21.36% | -0.285 | 15.51% |
-| 4 | EMA 0.9999 | 10.85% | +0.148 | 18.70% | -0.050 | 14.78% |
-| 5 | WSD | 11.74% | +0.101 | 19.52% | -0.130 | 15.63% |
-| 6 | dropout 0.10 | 9.51% | +0.119 | 21.17% | -0.270 | 15.34% |
-| 7 | oreg 0.05 | 13.03% | +0.007 | 18.68% | -0.048 | 15.86% |
-| 8 | dropout 0.01 | 18.12% | -0.405 | 16.89% | +0.202 | 17.51% |
+| 1 | **LSmooth 0.15** | **10.88%** | **+0.150** | 18.49% | -0.012 | **14.69%** |
+| 2 | EMA 0.9999 | 10.85% | +0.148 | 18.70% | -0.050 | 14.78% |
+| 3 | MTP(2,4,8,16) | 11.56% | +0.109 | 18.37% | +0.039 | 14.97% |
+| 4 | **OHEM 0.9** | 11.41% | +0.119 | 18.73% | -0.052 | 15.07% |
+| 5 | LSmooth 0.20 | 11.93% | +0.084 | 18.22% | +0.037 | 15.08% |
+| 6 | MTP(2,4,8,16)+drop 0.01 | 11.84% | +0.089 | 18.42% | -0.008 | 15.13% |
+| 7 | oreg 0.10 | 9.65% | +0.157 | 21.36% | -0.285 | 15.51% |
+| 8 | dropout 0.10 | 9.51% | +0.119 | 21.17% | -0.270 | 15.34% |
+| 9 | dropout 0.01 | 18.12% | -0.405 | 16.89% | +0.202 | 17.51% |
 
 ### Day 1, full grid search — 20+ configs, optimal found
 

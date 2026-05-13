@@ -32,6 +32,7 @@ def train_model(
     model_cfg: ModelConfig, train_cfg: TrainConfig, train_ds, run_dir: str,
     input_dropout: float = 0.0, output_reg: float = 0.0, mtp_weight: float = 0.3,
     crowfeather: bool = False, lr_schedule: str = "cosine", ema_decay: float = 0.0,
+    ohem_fraction: float = 0.0, label_smoothing: float = 0.0,
 ):
     os.makedirs(run_dir, exist_ok=True)
     set_seed(train_cfg.seed)
@@ -40,6 +41,7 @@ def train_model(
     model = TinyForecaster(model_cfg).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=train_cfg.lr, weight_decay=train_cfg.weight_decay)
     loss_fn = nn.MSELoss()
+    loss_fn_per_sample = nn.MSELoss(reduction="none") if ohem_fraction > 0 else None
 
     from .experiments.input_dropout import apply_input_dropout
     from .experiments.output_reg import output_regularization
@@ -94,7 +96,16 @@ def train_model(
                 pred = out
                 mtp_preds = None
 
-            loss = loss_fn(pred, yb)
+            if label_smoothing > 0:
+                from .experiments.label_smoothing import smooth_targets
+                yb = smooth_targets(yb, label_smoothing)
+
+            if ohem_fraction > 0:
+                from .experiments.ohem import ohem_loss
+                per_sample = loss_fn_per_sample(pred, yb).squeeze(-1)
+                loss = ohem_loss(per_sample, ohem_fraction)
+            else:
+                loss = loss_fn(pred, yb)
 
             if mtp_preds is not None and model_cfg.mtp_horizons:
                 for h, aux_pred in mtp_preds.items():

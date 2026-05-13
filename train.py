@@ -43,6 +43,10 @@ def parse_args():
                    help="LR schedule: cosine or warmup-stable-decay (WSD) with sqrt cooldown")
     p.add_argument("--ema-decay", type=float, default=0.0,
                    help="EMA decay rate for model weight averaging (0=disabled, typical 0.999-0.9999)")
+    p.add_argument("--ohem-fraction", type=float, default=0.0,
+                   help="Fraction of hardest examples to train on (0=disabled, 1=all). Online Hard Example Mining.")
+    p.add_argument("--label-smoothing", type=float, default=0.0,
+                   help="Smoothing epsilon for regression targets (0=disabled). Pulls targets toward batch mean.")
     return p.parse_args()
 
 
@@ -94,6 +98,10 @@ def main():
         flags.append("wsd")
     if args.ema_decay > 0:
         flags.append(f"ema={args.ema_decay}")
+    if args.ohem_fraction > 0:
+        flags.append(f"ohem={args.ohem_fraction}")
+    if args.label_smoothing > 0:
+        flags.append(f"lsmooth={args.label_smoothing}")
     suffix = "_" + "_".join(flags) if flags else ""
     out = out + suffix
 
@@ -117,6 +125,8 @@ def main():
         crowfeather=args.crowfeather,
         lr_schedule=args.lr_schedule,
         ema_decay=args.ema_decay,
+        ohem_fraction=args.ohem_fraction,
+        label_smoothing=args.label_smoothing,
     )
     plot_loss_curve(history, os.path.join(out, "loss_curve.png"))
 
