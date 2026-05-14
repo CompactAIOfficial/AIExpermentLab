@@ -160,10 +160,28 @@ class TinyForecaster(nn.Module):
         else:
             self.act = None
 
-    def forward(self, x):
-        h = self.input_proj(x)
-        h = self.pos(h)
+        if cfg.latent_steps > 0:
+            from .experiments.latent_reasoning import LatentReasoning
+            self.latent = LatentReasoning(
+                self.blocks, cfg.d_model,
+                latent_steps=cfg.latent_steps,
+                think_penalty=0.0,
+            )
+        else:
+            self.latent = None
 
+        if cfg.ssm_decay > 0:
+            from .experiments.ssm_injection import SSMInjection
+            self.ssm = SSMInjection(cfg.d_model, cfg.n_layers, decay_init=cfg.ssm_decay)
+        else:
+            self.ssm = None
+
+        self._ponder_cost = None
+        self._think_cost = None
+
+    def _process_blocks(self, h: torch.Tensor) -> torch.Tensor:
+        if self.ssm is not None:
+            self.ssm.reset_state(h.size(0), h.device)
         if self.cfg.mhc_streams > 0:
             streams = h.unsqueeze(1).expand(-1, self.cfg.mhc_streams, -1, -1).clone()
             streams = streams + torch.randn_like(streams) * 0.01
@@ -174,8 +192,21 @@ class TinyForecaster(nn.Module):
             h, ponder_cost = self.act(h)
             self._ponder_cost = ponder_cost
         else:
-            for blk in self.blocks:
+            for i, blk in enumerate(self.blocks):
                 h = blk(h)
+                if self.ssm is not None:
+                    h = self.ssm(h, i)
+        return h
+
+    def forward(self, x):
+        h = self.input_proj(x)
+        h = self.pos(h)
+
+        h = self._process_blocks(h)
+
+        if self.latent is not None:
+            h, think_loss = self.latent(h)
+            self._think_cost = think_loss
 
         h = self.norm(h)
         main = self.head(h[:, -1])

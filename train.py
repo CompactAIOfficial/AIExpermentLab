@@ -71,6 +71,14 @@ def parse_args():
                    help="ACT halting threshold (default 0.01). Position halts when accumulated prob > 1-epsilon.")
     p.add_argument("--act-time-penalty", type=float, default=0.001,
                    help="ACT ponder cost weight (default 0.001). Multiplied by avg steps used.")
+
+    # Day 3 experiment flags
+    p.add_argument("--latent-steps", type=int, default=0,
+                   help="Number of latent thinking steps (0=disabled). COCONUT-style reasoning in continuous latent space.")
+    p.add_argument("--ssm-decay", type=float, default=0.0,
+                   help="SSM recurrent injection decay (0=disabled). Adds state-space model path through blocks.")
+    p.add_argument("--curriculum-epochs", type=int, default=0,
+                   help="Ramp latent steps from 0 to full over this many epochs (0=instant).")
     return p.parse_args()
 
 
@@ -156,6 +164,12 @@ def main():
         flags.append(f"lora={args.lora_rank}")
     if args.act_max_steps > 0:
         flags.append(f"act={args.act_max_steps}")
+    if args.latent_steps > 0:
+        flags.append(f"latent={args.latent_steps}")
+    if args.ssm_decay > 0:
+        flags.append(f"ssm={args.ssm_decay}")
+    if args.curriculum_epochs > 0:
+        flags.append(f"curric={args.curriculum_epochs}")
     suffix = "_" + "_".join(flags) if flags else ""
     out = out + suffix
 
@@ -185,6 +199,9 @@ def main():
         fim_rate=args.fim_rate,
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
+        latent_steps=args.latent_steps,
+        ssm_decay=args.ssm_decay,
+        curriculum_epochs=args.curriculum_epochs,
     )
     plot_loss_curve(history, os.path.join(out, "loss_curve.png"))
 

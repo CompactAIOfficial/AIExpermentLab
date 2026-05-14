@@ -21,6 +21,9 @@ class ModelConfig:
     act_max_steps: int = 0
     act_epsilon: float = 0.01
     act_time_penalty: float = 0.001
+    latent_steps: int = 0
+    ssm_decay: float = 0.0
+    curriculum_epochs: int = 0
 
 
 @dataclass

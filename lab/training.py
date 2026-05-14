@@ -35,6 +35,8 @@ def train_model(
     ohem_fraction: float = 0.0, label_smoothing: float = 0.0,
     muon_lr: float = 0.0, fim_rate: float = 0.0,
     lora_rank: int = 0, lora_alpha: float = 1.0,
+    latent_steps: int = 0, ssm_decay: float = 0.0,
+    curriculum_epochs: int = 0,
 ):
     os.makedirs(run_dir, exist_ok=True)
     set_seed(train_cfg.seed)
@@ -46,6 +48,19 @@ def train_model(
         from .experiments.depth_lora import apply_depth_lora
         model = apply_depth_lora(model, lora_rank, lora_alpha)
         model = model.to(device)
+
+    if latent_steps > 0:
+        model_cfg.latent_steps = latent_steps
+        from .experiments.latent_reasoning import LatentReasoning
+        model.latent = LatentReasoning(
+            model.blocks, model_cfg.d_model,
+            latent_steps=latent_steps, think_penalty=0.0,
+        ).to(device)
+
+    if ssm_decay > 0:
+        model_cfg.ssm_decay = ssm_decay
+        from .experiments.ssm_injection import SSMInjection
+        model.ssm = SSMInjection(model_cfg.d_model, model_cfg.n_layers, decay_init=ssm_decay).to(device)
 
     from .experiments.input_dropout import apply_input_dropout
     from .experiments.output_reg import output_regularization
@@ -84,6 +99,11 @@ def train_model(
     global_step = 0
 
     for epoch in range(train_cfg.epochs):
+        if latent_steps > 0 and curriculum_epochs > 0 and hasattr(model, 'latent') and model.latent is not None:
+            from .experiments.latent_reasoning import get_latent_steps_for_epoch
+            model.latent.latent_steps = get_latent_steps_for_epoch(
+                epoch, latent_steps, curriculum_epochs
+            )
         model.train()
         t0 = time.time()
         train_loss = 0.0
@@ -137,6 +157,8 @@ def train_model(
 
             if hasattr(model, '_ponder_cost') and model._ponder_cost is not None:
                 loss = loss + model._ponder_cost
+            if hasattr(model, '_think_cost') and model._think_cost is not None:
+                loss = loss + model._think_cost
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip)
