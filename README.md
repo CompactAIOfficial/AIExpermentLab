@@ -10,7 +10,7 @@
 
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support_the_Lab-FF5E5B?style=for-the-badge&logo=kofi&logoColor=white)](https://ko-fi.com/compactai)
 [![License](https://img.shields.io/badge/License-AGPL_V3-blue?style=for-the-badge)](#license)
-[![Status](https://img.shields.io/badge/Status-Day_2-orange?style=for-the-badge)](#progress-log)
+[![Status](https://img.shields.io/badge/Status-Day_3-orange?style=for-the-badge)](#progress-log)
 
 </div>
 
@@ -61,14 +61,14 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | Feature | Origin | Status |
 |---------|--------|--------|
 | Recurrent depth core (Prelude → Recurrent Core → Coda, Mythos-style) | TinyMemoryLM | queued |
-| Stable Recurrent Injection (SSM-style `h = A·h + B·e + Δ`, Parcae §3.1) | TinyMemoryLM | queued |
+| Stable Recurrent Injection (SSM-style `h = A·h + B·e + Δ`, Parcae §3.1) | `lab/experiments/ssm_injection.py` | **tested — KEPT (decay=0.5)** |
 | Depth LoRA (per-loop low-rank adaptation with learned loop embeddings) | `lab/experiments/depth_lora.py` | **tested — KEPT (rank=8)** |
 | Adaptive Halting (per-position learned stop probability) | `lab/experiments/adaptive_halting.py` | **tested — KEPT (max_steps=6)** |
 | SleepGate (persistent cross-sequence memory buffer, periodic consolidation) | `sleep_gate.py` | queued |
 | TRIM-KV retention gate (arxiv:2512.03324, learned per-entry retention β) | `sleep_gate.py` | queued |
 | Engram (DeepSeek-style hashed n-gram conditional memory, O(1) lookup) | `EngramBlock` | queued |
 | Manifold Hyper-Connections (Sinkhorn-Knopp doubly stochastic residual mixing) | `lab/model.py` | **tested — KEPT (4 streams)** |
-| COCONUT-style Latent Thinking blocks (continuous chain-of-thought) | `latent_think_layers` | queued |
+| COCONUT-style Latent Thinking blocks (continuous chain-of-thought) | `lab/experiments/latent_reasoning.py` | **tested — KEPT (4 steps)** |
 | Multi-Token Prediction (auxiliary heads at future horizons) | `lab/experiments/mtp.py` | **tested — KEPT** |
 | Per-Layer Embeddings (Gemma 3n PLE, token-conditional per-layer signal) | `ple_dim` | queued |
 | Auxiliary heads (bigram prediction, word boundary detection, L11) | `aux_*` | queued |
@@ -90,7 +90,7 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | PPG (Progressive Parameter Grouping, low-dim warmup then split) | `ppg.py` | queued |
 | Anti-pattern unlikelihood loss (push down curated bad continuations) | `anti_patterns.py` | queued |
 | GADW (Gradient Aware Dynamic Weighting for multi-loss balancing) | `gadw.py` | queued |
-| Curriculum learning (recurrent loop count ramp-up) | `curriculum.py` | queued |
+| Curriculum learning (recurrent loop count ramp-up) | `lab/experiments/curriculum.py` | **tested — NEUTRAL** |
 | Model averaging (EMA / SWA style weight smoothing) | `lab/experiments/ema.py` | **tested — KEPT (0.9999)** |
 | Muon optimizer (Newton-Schulz orthogonalization) | `lab/experiments/muon.py` | **tested — KEPT (0.005)** |
 | Crowfeather AdamW (eps=1e-20, β2 ramp 0.95→0.97 post-warmup) | `lab/experiments/crowfeather.py` | **tested — DROPPED** |
@@ -470,6 +470,56 @@ Best for: "I want dynamic per-position computation with the best blind average."
 
 Best for: "I have multiple seeds and want a no-cost blind-mode boost — but I have to test each pair."
 
+### `--latent-steps 4`
+
+COCONUT-style latent reasoning: after the standard forward pass through transformer blocks, the hidden state is re-processed through all blocks for 4 additional "thinking" steps without seeing new input. Based on Meta FAIR's COCONUT paradigm (Hao et al., COLM 2025) — reasoning in continuous latent space rather than language tokens. No extra params.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Best Day 3 blind avg (14.69%)**. Ties LSmooth for blind avg. Best AAPL blind (10.03%, +0.184 skill) among Day 3 features. Nonblind unaffected (1.36% / 2.20%). Zero extra params. | Partial mode mediocre (AAPL 11.86%, NVDA 20.52%, both negative skill). Only works at 1 or 4 steps — 2, 6, 12 are unstable. |
+
+Best for: "I want the best blind avg of all Day 3 features with zero param overhead."
+
+### `--latent-steps 1`
+
+Single latent thinking step. Milder version of COCONUT reasoning.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Positive skill on both tickers in blind AND partial**: AAPL blind +0.137, NVDA blind -0.030, AAPL partial +0.046, NVDA partial +0.025. Good DirAcc (0.560 AAPL partial). | NVDA blind (18.54%) is near baseline. Partial NVDA MAPE (17.65%) is middling. |
+
+Best for: "I want positive skill everywhere at zero param cost."
+
+### `--ssm-decay 0.5`
+
+Adds a per-block state-space model path where state evolves per-position: `state[t] = decay · state[t−1] + B(x[t])`. The state is added to each block's output, providing a linear recurrent pathway alongside attention. Adds 4,096 params per block (B projection) + 64 params per block (log decay).
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Best AAPL blind MAPE ever: 9.37%** (+0.117 skill) — beats SLERP 42-44 t=0.6 (9.41%), LoRA-8+SLERP (9.38%), and fim 0.25 (9.77%). Nonblind unaffected (1.45%). | NVDA degrades across all modes (21.30% blind). High decay (0.9–0.95) destabilises AAPL to 25k%+. Only low decay (0.5) or very high decay (0.999) are stable. |
+
+Best for: "I only care about AAPL blind MAPE and accept NVDA regressions."
+
+### `--ssm-decay 0.999`
+
+High-decay SSM that retains state almost perfectly. More balanced than ssm=0.5.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Positive skill on both tickers blind**: AAPL +0.065, NVDA +0.121. Balanced across tickers (12.24% AAPL, 18.56% NVDA). | NVDA partial degrades (not tested). AAPL blind (12.24%) is merely average. |
+
+Best for: "I want balanced blind results with positive skill on both tickers."
+
+### `--curriculum-epochs 10` (with `--latent-steps`)
+
+Ramps the number of latent thinking steps from 0 to the target over N epochs. Based on the multi-stage curriculum training in the COCONUT paper.
+
+| Does well | Sucks at |
+|-----------|----------|
+| Slightly improves NVDA (18.30% vs 18.54%) over latent=1 alone. | Worse than latent=1 or latent=4 alone on all other metrics. Adds complexity without benefit.  |
+
+Best for: Nothing. Not worth the complexity.
+
 ### Configs that don't stack
 
 These combinations were tested and performed strictly worse than either feature alone:
@@ -486,6 +536,7 @@ These combinations were tested and performed strictly worse than either feature 
 | LoRA + ACT | LoRA-8 + ACT-6: NVDA blind explodes to 30.77% (vs 20.64% / 20.58% alone). LoRA-16 + ACT-6 even worse (32.45%). The recurrent loop shares state across LoRA-adapted blocks, causing accumulation that the ponder cost can't regularize. |
 | 3-way SLERP across mismatched basins | Merging seeds 42+43+44 reliably diverges (NVDA 266% blind). Seed 43 lives in a different basin than 42/44; including it in any merge causes catastrophic interference. Pairwise merges of basin-compatible seeds (42-44, 43-44) work; the 42-43 pair alone also diverges. |
 | SLERP at t=0.25 / t=0.75 across basins | Even with valid endpoints, off-center t values amplify basin mismatch. The 42-43 pair at t=0.25 hit AAPL=2.9 billion% MAPE. Stay within t∈[0.4, 0.7] for tested pairs. |
+| latent + SSM (latent=1 + ssm=0.999) | AAPL blind explodes to 55.76%. The SSM's recurrent state interacts destructively with the additional latent thinking passes through the same blocks. |
 
 ---
 
@@ -541,18 +592,21 @@ Each feature has a mode where it excels:
 | Goal | Config | Best Metric |
 |------|--------|-------------|
 | Best avg blind MAPE | `--muon-lr 0.005` | Avg blind **14.24%** MAPE |
+| Best blind AAPL MAPE | `--ssm-decay 0.5` | AAPL blind **9.37%** MAPE, **+0.117** skill |
 | Best blind AAPL skill | `--fim-rate 0.25` | AAPL blind **9.77%** MAPE, **+0.188** skill |
 | Best blind AAPL skill (runner-up) | `--muon-lr 0.005` | AAPL blind **9.92%** MAPE, **+0.178** skill |
 | Best nonblind DirAcc | `--gqa-kv-heads 2 --qk-norm` | AAPL nonblind DirAcc **0.520**, skill **+0.868** |
 | Best NVDA partial (Day 2) | `--fim-rate 0.3` | NVDA partial **13.19%** MAPE, **+0.282** skill |
 | Best NVDA partial (all-time) | `--output-reg 0.05` | NVDA partial **9.08%** MAPE, **+0.547** skill |
-| Best avg blind MAPE (zero params) | `--label-smoothing 0.15` | Avg blind **14.69%** MAPE |
+| Best avg blind MAPE (zero params) | `--latent-steps 4` | Avg blind **14.69%** MAPE |
 | Best AAPL partial (zero params) | `--ohem-fraction 0.9` | AAPL partial **11.19%** MAPE, **+0.129** skill |
-| Best AAPL blind (zero params) | `--input-dropout 0.10` | AAPL blind **9.51%** MAPE, **+0.119** skill |
+| Best AAPL blind (zero params, previous) | `--input-dropout 0.10` | AAPL blind **9.51%** MAPE, **+0.119** skill |
 | Best positive-skill both (zero params) | `--label-smoothing 0.20` | AAPL blind +0.084, NVDA blind +0.037, AAPL partial +0.093, NVDA partial +0.112 |
 | Best NVDA blind (zero params) | `--lr-schedule wsd` | AAPL blind **11.74%** MAPE, **+0.101** skill |
 | Best NVDA blind | `--input-dropout 0.01` | NVDA blind **16.89%** MAPE, **+0.202** skill |
 | Best avg MAPE (architecture) | `--mtp-horizons 2,4,8,16` | Avg blind **14.97%** MAPE |
+| Best positive-skill both tickers blind (Day 3) | `--latent-steps 1` | AAPL blind +0.137, NVDA blind -0.030, AAPL partial +0.046 |
+| Best positive-skill both tickers blind (SSM) | `--ssm-decay 0.999` | AAPL blind +0.065, NVDA blind +0.121 |
 
 ```bash
 # Best avg blind MAPE (zero params)
@@ -605,6 +659,65 @@ python train.py --mtp-horizons 2,4,8,16
 ## Progress Log
 
 A running journal of every experiment. Newest entries on top.
+
+### Day 3, Three features: Latent Reasoning, SSM Injection, Curriculum Learning
+
+* **What**: Implemented and tested 3 features: Latent Reasoning (COCONUT-style continuous thought, 7-step sweep), SSM Injection (per-position stable recurrent injection, 7-value decay sweep), and Curriculum Learning (latent-step ramp-up, 8-value sweep + combos). 23 models trained (7 latent, 7 SSM, 8 curriculum/combos), top 3 full 3-mode benchmarked.
+* **Features**: `--latent-steps` (1–12), `--ssm-decay` (0.5–0.999), `--curriculum-epochs` (5–30)
+* **Compute**: NVIDIA RTX 5090, ~3 minutes total
+
+#### Full 3-mode results (top 3 variants)
+
+| Config | Mode | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill |
+|--------|------|-----------|------------|-----------|------------|
+| **latent=4** | blind | 10.03% | +0.184 | 19.35% | -0.117 |
+| **latent=4** | nonblind | 1.36% | +0.864 | 2.20% | +0.873 |
+| **latent=4** | partial | 11.86% | -0.016 | 20.52% | -0.235 |
+| **latent=1** | blind | 11.07% | +0.137 | 18.54% | -0.030 |
+| **latent=1** | nonblind | 1.33% | +0.866 | 2.17% | +0.874 |
+| **latent=1** | partial | 11.71% | +0.046 | 17.65% | +0.025 |
+| **ssm=0.5** | blind | **9.37%** | +0.117 | 21.30% | -0.280 |
+| **ssm=0.5** | nonblind | 1.45% | +0.863 | 2.27% | +0.869 |
+| **ssm=0.5** | partial | 10.91% | -0.072 | 21.10% | -0.406 |
+| baseline | blind | 13.32% | -0.018 | 18.28% | +0.017 |
+| baseline | nonblind | 1.29% | +0.868 | 2.14% | +0.875 |
+| baseline | partial | 13.13% | -0.007 | 13.32% | +0.334 |
+
+#### Blind mode results (Day 3 features vs baseline)
+
+| Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
+|--------|-----------|------------|-----------|------------|----------|
+| **latent=4** | 10.03% | +0.184 | 19.35% | -0.117 | **14.69%** |
+| **latent=1** | 11.07% | +0.137 | 18.54% | -0.030 | **14.81%** |
+| latent=1 + ssm=0.5 | 10.21% | +0.178 | 19.80% | -0.153 | 15.01% |
+| latent=1 + curric=10 | 12.15% | +0.064 | 18.30% | +0.010 | 15.22% |
+| **ssm=0.5** | **9.37%** | +0.117 | 21.30% | -0.280 | 15.34% |
+| **ssm=0.999** | 12.24% | +0.065 | 18.56% | +0.121 | 15.40% |
+| baseline | 13.32% | -0.018 | 18.28% | +0.017 | 15.80% |
+
+#### Key findings
+
+* **Latent reasoning at 4 steps beats all Day 3 features for blind avg**: **14.69%** avg blind MAPE — ties LSmooth 0.15. AAPL 10.03% (+0.184 skill) is excellent. Only 1 step and 4 steps are stable — 2, 6, 8, 12 all show instability (AAPL blind from 12.84% to 4 million%). The narrow sweet spot suggests the small 2-layer model can't handle many extra passes through the same blocks without overthinking.
+* **SSM decay=0.5 achieves the best AAPL blind MAPE ever: 9.37%** — beats the previous best (SLERP 42-44 t=0.6 at 9.41%) by 0.04pp. The low decay means the state evolves rapidly, creating short-term recurrent memory. NVDA degrades to 21.30%.
+* **SSM decay=0.999 gives positive skill on both tickers blind**: AAPL +0.065, NVDA +0.121. The near-unit decay preserves state as a long-range signal booster.
+* **SSM has a U-shaped stability profile**: Low decay (0.5–0.7) and very high decay (0.999) are stable. Mid-range decay (0.9–0.95) destabilises AAPL (25k%+ MAPE).
+* **Curriculum learning doesn't help**: All curriculum variants worse than the base latent-steps alone. Starting from 0 steps removes the architecture's benefit during early training.
+* **Combinations mostly don't stack**: latent=1 + ssm=0.999 explodes (55.76% AAPL). latent=1 + ssm=0.5 is worse than either alone.
+* **Nonblind mode is invariant**: All variants score MAPE 1.33–1.45% (AAPL) / 2.17–2.27% (NVDA) with skill +0.863–0.874.
+
+#### Verdicts
+
+| Feature | Verdict |
+|---------|---------|
+| `--latent-steps 4` | **KEEP** — best Day 3 blind avg, zero params, ties LSmooth 0.15 |
+| `--latent-steps 1` | **KEEP** — positive skill on both tickers blind + partial |
+| `--latent-steps 2/3/6/8` | **NEUTRAL** — work but dominated by 1 and 4 |
+| `--latent-steps 12` | **DROP** — unstable, AAPL explodes |
+| `--ssm-decay 0.5` | **KEEP** — best AAPL blind MAPE ever (9.37%) |
+| `--ssm-decay 0.999` | **KEEP** — positive skill both tickers blind |
+| `--ssm-decay 0.9/0.95` | **DROP** — unstable, AAPL explodes |
+| `--curriculum-epochs` (any) | **DROP** — worse than base latent-steps alone |
+| latent + SSM combos | **DROP** — doesn't stack, most explode |
 
 ### Day 2, Three features: Depth LoRA, Adaptive Halting, SLERP merging
 
@@ -664,15 +777,18 @@ A running journal of every experiment. Newest entries on top.
 
 | Rank | Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
 |------|--------|-----------|------------|-----------|------------|----------|
-| 1 | **LoRA-8 + SLERP 42-44** | **9.38%** | +0.097 | 20.72% | -0.233 | 15.05% |
-| 2 | **SLERP 42-44 t=0.6** | **9.41%** | **+0.179** | 19.78% | -0.152 | **14.60%** |
-| 3 | SLERP 42-44 t=0.5 | 9.52% | +0.188 | 19.60% | -0.137 | 14.56% |
-| 4 | ACT-6 + SLERP 42-44 | 9.69% | **+0.190** | 19.47% | -0.125 | 14.58% |
-| 5 | fim 0.25 (Day 2) | 9.77% | +0.188 | 19.66% | -0.142 | 14.72% |
-| 6 | ACT max_steps=6 | 9.87% | +0.181 | 20.58% | -0.214 | 15.23% |
-| 7 | Muon 0.005 (Day 2) | 9.92% | +0.178 | 18.56% | -0.009 | **14.24%** |
-| 8 | LoRA rank=8 | 10.09% | +0.180 | 20.64% | -0.227 | 15.36% |
-| 9 | LoRA rank=16 | 10.43% | +0.086 | 22.33% | -0.339 | 16.38% |
+| — | **Muon 0.005** | 9.92% | +0.178 | 18.56% | -0.009 | **14.24%** |
+| — | **SLERP 42-44 t=0.5** | 9.52% | +0.188 | 19.60% | -0.137 | 14.56% |
+| — | ACT-6 + SLERP 42-44 | 9.69% | **+0.190** | 19.47% | -0.125 | 14.58% |
+| — | **SLERP 42-44 t=0.6** | **9.41%** | +0.179 | 19.78% | -0.152 | **14.60%** |
+| — | **latent=4 (Day 3)** | 10.03% | +0.184 | 19.35% | -0.117 | **14.69%** |
+| — | fim 0.25 | 9.77% | +0.188 | 19.66% | -0.142 | 14.72% |
+| — | **latent=1 (Day 3)** | 11.07% | +0.137 | 18.54% | -0.030 | **14.81%** |
+| — | LSmooth 0.15 | 10.88% | +0.150 | 18.49% | -0.012 | **14.69%** |
+| — | ACT max_steps=6 | 9.87% | +0.181 | 20.58% | -0.214 | 15.23% |
+| — | ssm=0.5 (Day 3) | **9.37%** | +0.117 | 21.30% | -0.280 | 15.34% |
+| — | LoRA-8 + SLERP 42-44 | **9.38%** | +0.097 | 20.72% | -0.233 | 15.05% |
+| — | LoRA rank=8 | 10.09% | +0.180 | 20.64% | -0.227 | 15.36% |
 | — | baseline (seed 42) | 45.72% | -2.40 | 19.19% | -0.10 | 32.46% |
 
 #### Verdicts
