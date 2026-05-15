@@ -85,6 +85,18 @@ def parse_args():
                    help="Weight for anti-pattern unlikelihood loss (0=disabled). Penalizes confident wrong-direction predictions.")
     p.add_argument("--nce-weight", type=float, default=0.0,
                    help="Weight for NCE context contrastive loss (0=disabled). Pulls nearby positions together, pushes distant apart.")
+
+    # Day 3 Round 2 experiment flags
+    p.add_argument("--engram", action="store_true",
+                   help="Enable Engram conditional memory. Hashes price n-grams into learned embedding lookup table.")
+    p.add_argument("--engram-n", type=int, default=4,
+                   help="N-gram length for Engram pattern hashing (default 4).")
+    p.add_argument("--engram-table", type=int, default=512,
+                   help="Engram embedding table size (default 512).")
+    p.add_argument("--sleep-gate", action="store_true",
+                   help="Enable SleepGate memory consolidation. Scores and consolidates hidden states across positions.")
+    p.add_argument("--trim-kv", action="store_true",
+                   help="Enable TRIM-KV learned retention gate. Per-key importance scoring in self-attention.")
     return p.parse_args()
 
 
@@ -182,6 +194,12 @@ def main():
         flags.append(f"anti={args.anti_pattern_weight}")
     if args.nce_weight > 0:
         flags.append(f"nce={args.nce_weight}")
+    if args.engram:
+        flags.append(f"engram")
+    if args.sleep_gate:
+        flags.append("sleep")
+    if args.trim_kv:
+        flags.append("trimkv")
     suffix = "_" + "_".join(flags) if flags else ""
     out = out + suffix
 
@@ -217,6 +235,9 @@ def main():
         ple=args.ple,
         anti_pattern_weight=args.anti_pattern_weight,
         nce_weight=args.nce_weight,
+        engram=args.engram,
+        sleep_gate=args.sleep_gate,
+        trim_kv=args.trim_kv,
     )
     plot_loss_curve(history, os.path.join(out, "loss_curve.png"))
 

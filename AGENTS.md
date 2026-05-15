@@ -441,6 +441,11 @@ python train.py --anti-pattern-weight 0.4
 # Day 3 R2 — NCE context loss (mild regularizer)
 python train.py --nce-weight 0.2
 
+# Day 3 R3 — Engram, SleepGate, TRIM-KV (boolean, train once each)
+python train.py --engram
+python train.py --sleep-gate  # DROPPED
+python train.py --trim-kv
+
 # Benchmark all modes
 python benchmark.py --model runs/.../model.pt --mode blind --no-plot
 python benchmark.py --model runs/.../model.pt --mode nonblind --no-plot

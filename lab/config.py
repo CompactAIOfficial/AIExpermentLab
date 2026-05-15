@@ -25,6 +25,11 @@ class ModelConfig:
     ssm_decay: float = 0.0
     curriculum_epochs: int = 0
     ple: bool = False
+    engram: bool = False
+    engram_n: int = 4
+    engram_table: int = 512
+    sleep_gate: bool = False
+    trim_kv: bool = False
 
 
 @dataclass

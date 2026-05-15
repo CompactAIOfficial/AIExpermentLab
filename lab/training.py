@@ -39,11 +39,16 @@ def train_model(
     curriculum_epochs: int = 0,
     ple: bool = False, anti_pattern_weight: float = 0.0,
     nce_weight: float = 0.0,
+    engram: bool = False, sleep_gate: bool = False, trim_kv: bool = False,
 ):
     os.makedirs(run_dir, exist_ok=True)
     set_seed(train_cfg.seed)
 
     device = torch.device(train_cfg.device)
+
+    if trim_kv:
+        model_cfg.trim_kv = True
+
     model = TinyForecaster(model_cfg).to(device)
 
     if lora_rank > 0:
@@ -68,6 +73,19 @@ def train_model(
         model_cfg.ple = True
         from .experiments.ple import PerLayerEmbeddings
         model.ple = PerLayerEmbeddings(model_cfg.d_model, model_cfg.n_layers).to(device)
+
+    if engram:
+        model_cfg.engram = True
+        from .experiments.engram import EngramMemory
+        model.engram = EngramMemory(model_cfg.d_model, ngram_n=model_cfg.engram_n, table_size=model_cfg.engram_table).to(device)
+
+    if sleep_gate:
+        model_cfg.sleep_gate = True
+        from .experiments.sleep_gate import SleepGate
+        model.sleep_gate = SleepGate(model_cfg.d_model).to(device)
+
+    if trim_kv:
+        model_cfg.trim_kv = True
 
     from .experiments.input_dropout import apply_input_dropout
     from .experiments.output_reg import output_regularization
@@ -131,9 +149,11 @@ def train_model(
 
             if lr_schedule == "wsd":
                 from .experiments.wsd_schedule import get_wsd_lr
-                opt.param_groups[0]["lr"] = get_wsd_lr(
-                    global_step, warmup_steps, total_steps, train_cfg.lr
-                )
+                new_lr = get_wsd_lr(global_step, warmup_steps, total_steps, train_cfg.lr)
+                if muon is not None:
+                    muon.adamw.param_groups[0]["lr"] = new_lr
+                else:
+                    opt.param_groups[0]["lr"] = new_lr
 
             opt.zero_grad()
             out = model(xb)

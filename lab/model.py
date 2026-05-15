@@ -47,6 +47,11 @@ class CausalSelfAttention(nn.Module):
             self.q_norm = RMSNorm(self.head_dim)
             self.k_norm = RMSNorm(self.head_dim)
 
+        self.trim_kv = cfg.trim_kv
+        if self.trim_kv:
+            from .experiments.trim_kv import TrimKVGate
+            self.trim_gate = TrimKVGate(self.head_dim, cfg.n_heads)
+
     def forward(self, x):
         B, T, C = x.shape
         q = self.q(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
@@ -62,9 +67,21 @@ class CausalSelfAttention(nn.Module):
             k = k.repeat_interleave(n_repeat, dim=1)
             v = v.repeat_interleave(n_repeat, dim=1)
 
-        out = F.scaled_dot_product_attention(
-            q, k, v, is_causal=True, dropout_p=self.dropout if self.training else 0.0
-        )
+        if self.trim_kv:
+            retention = self.trim_gate(k)
+            scale = self.head_dim ** -0.5
+            att = (q @ k.transpose(-2, -1)) * scale
+            causal = torch.tril(torch.ones(T, T, device=x.device)).view(1, 1, T, T)
+            att = att + retention.unsqueeze(-2)
+            att = att.masked_fill(causal == 0, float('-inf'))
+            att = F.softmax(att, dim=-1)
+            if self.dropout > 0 and self.training:
+                att = F.dropout(att, p=self.dropout)
+            out = att @ v
+        else:
+            out = F.scaled_dot_product_attention(
+                q, k, v, is_causal=True, dropout_p=self.dropout if self.training else 0.0
+            )
         out = out.transpose(1, 2).contiguous().view(B, T, C)
         return self.proj(out)
 
@@ -182,6 +199,18 @@ class TinyForecaster(nn.Module):
         else:
             self.ple = None
 
+        if cfg.engram:
+            from .experiments.engram import EngramMemory
+            self.engram = EngramMemory(cfg.d_model, ngram_n=cfg.engram_n, table_size=cfg.engram_table)
+        else:
+            self.engram = None
+
+        if cfg.sleep_gate:
+            from .experiments.sleep_gate import SleepGate
+            self.sleep_gate = SleepGate(cfg.d_model)
+        else:
+            self.sleep_gate = None
+
         self._ponder_cost = None
         self._think_cost = None
 
@@ -210,7 +239,13 @@ class TinyForecaster(nn.Module):
         h = self.input_proj(x)
         h = self.pos(h)
 
+        if self.engram is not None:
+            h = self.engram(h, x)
+
         h = self._process_blocks(h)
+
+        if self.sleep_gate is not None:
+            h = self.sleep_gate(h)
 
         if self.latent is not None:
             h, think_loss = self.latent(h)
