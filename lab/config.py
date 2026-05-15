@@ -30,7 +30,9 @@ class ModelConfig:
     engram_table: int = 512
     sleep_gate: bool = False
     trim_kv: bool = False
-
+    gadw: bool = False
+    recurrent_depth: int = 0
+    think_depth_weight: float = 0.0
 
 @dataclass
 class TrainConfig:

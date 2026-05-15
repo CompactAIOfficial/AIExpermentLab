@@ -183,6 +183,7 @@ class TinyForecaster(nn.Module):
                 self.blocks, cfg.d_model,
                 latent_steps=cfg.latent_steps,
                 think_penalty=0.0,
+                depth_weight=getattr(cfg, 'think_depth_weight', 0.0),
             )
         else:
             self.latent = None
@@ -211,6 +212,12 @@ class TinyForecaster(nn.Module):
         else:
             self.sleep_gate = None
 
+        if cfg.recurrent_depth > 0:
+            from .experiments.recurrent_depth import RecurrentDepthCore
+            self.recurrent_core = RecurrentDepthCore(self.blocks, cfg.recurrent_depth)
+        else:
+            self.recurrent_core = None
+
         self._ponder_cost = None
         self._think_cost = None
 
@@ -226,6 +233,8 @@ class TinyForecaster(nn.Module):
         elif self.act is not None:
             h, ponder_cost = self.act(h)
             self._ponder_cost = ponder_cost
+        elif self.recurrent_core is not None:
+            h = self.recurrent_core(h)
         else:
             for i, blk in enumerate(self.blocks):
                 if self.ple is not None:

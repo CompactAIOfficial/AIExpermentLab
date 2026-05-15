@@ -40,6 +40,7 @@ def train_model(
     ple: bool = False, anti_pattern_weight: float = 0.0,
     nce_weight: float = 0.0,
     engram: bool = False, sleep_gate: bool = False, trim_kv: bool = False,
+    gadw: bool = False, recurrent_depth: int = 0, think_depth_weight: float = 0.0,
 ):
     os.makedirs(run_dir, exist_ok=True)
     set_seed(train_cfg.seed)
@@ -48,6 +49,10 @@ def train_model(
 
     if trim_kv:
         model_cfg.trim_kv = True
+    if recurrent_depth > 0:
+        model_cfg.recurrent_depth = recurrent_depth
+    if think_depth_weight > 0:
+        model_cfg.think_depth_weight = think_depth_weight
 
     model = TinyForecaster(model_cfg).to(device)
 
@@ -62,6 +67,7 @@ def train_model(
         model.latent = LatentReasoning(
             model.blocks, model_cfg.d_model,
             latent_steps=latent_steps, think_penalty=0.0,
+            depth_weight=think_depth_weight,
         ).to(device)
 
     if ssm_decay > 0:
@@ -113,6 +119,13 @@ def train_model(
         from .experiments.ema import ModelEMA
         ema = ModelEMA(model, decay=ema_decay)
 
+    gadw_mod = None
+    gadw_opt = None
+    if gadw:
+        from .experiments.gadw import GADW
+        gadw_mod = GADW(n_losses=6).to(device)
+        gadw_opt = torch.optim.AdamW(gadw_mod.parameters(), lr=1e-3)
+
     train_loader, val_loader = make_loaders(train_ds, train_cfg)
     batches_per_epoch = len(train_loader)
     warmup_steps = int(0.1 * train_cfg.epochs * batches_per_epoch)
@@ -156,6 +169,8 @@ def train_model(
                     opt.param_groups[0]["lr"] = new_lr
 
             opt.zero_grad()
+            if gadw_opt is not None:
+                gadw_opt.zero_grad()
             out = model(xb)
 
             if has_mtp:
@@ -175,23 +190,40 @@ def train_model(
             else:
                 loss = loss_fn(pred, yb)
 
+            loss_parts = [loss]
+
             if mtp_preds is not None and model_cfg.mtp_horizons:
+                mtp_loss = torch.tensor(0.0, device=device)
                 for h, aux_pred in mtp_preds.items():
                     aux_target = aux_targets[h].to(device)
-                    loss += mtp_weight * loss_fn(aux_pred, aux_target)
+                    mtp_loss = mtp_loss + mtp_weight * loss_fn(aux_pred, aux_target)
+                loss_parts.append(mtp_loss)
+                loss = loss + mtp_loss
 
-            loss = loss + output_regularization(pred, output_reg)
+            reg_loss = output_regularization(pred, output_reg)
+            if output_reg > 0:
+                loss_parts.append(reg_loss)
+                loss = loss + reg_loss
 
             if hasattr(model, '_ponder_cost') and model._ponder_cost is not None:
+                loss_parts.append(model._ponder_cost)
                 loss = loss + model._ponder_cost
             if hasattr(model, '_think_cost') and model._think_cost is not None:
+                loss_parts.append(model._think_cost)
                 loss = loss + model._think_cost
             if anti_pattern_weight > 0:
                 from .experiments.anti_pattern import anti_pattern_loss
-                loss = loss + anti_pattern_loss(pred, xb, anti_pattern_weight)
+                ap_loss = anti_pattern_loss(pred, xb, anti_pattern_weight)
+                loss_parts.append(ap_loss)
+                loss = loss + ap_loss
             if nce_weight > 0 and hasattr(model, '_last_hidden') and model._last_hidden is not None:
                 from .experiments.nce_context import nce_context_loss
-                loss = loss + nce_context_loss(model._last_hidden, nce_weight)
+                nce_l = nce_context_loss(model._last_hidden, nce_weight)
+                loss_parts.append(nce_l)
+                loss = loss + nce_l
+
+            if gadw_mod is not None and len(loss_parts) > 1:
+                loss = gadw_mod(loss_parts)
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip)
@@ -200,6 +232,8 @@ def train_model(
                 muon.step()
             else:
                 opt.step()
+            if gadw_opt is not None:
+                gadw_opt.step()
 
             if crowfeather and not muon:
                 from .experiments.crowfeather import apply_crowfeather

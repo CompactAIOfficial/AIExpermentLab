@@ -60,7 +60,7 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 
 | Feature | Origin | Status |
 |---------|--------|--------|
-| Recurrent depth core (Prelude → Recurrent Core → Coda, Mythos-style) | TinyMemoryLM | queued |
+| Recurrent depth core (Prelude → Recurrent Core → Coda, Mythos-style) | `lab/experiments/recurrent_depth.py` | **tested — KEPT (depth=4, zero extra params)** |
 | Stable Recurrent Injection (SSM-style `h = A·h + B·e + Δ`, Parcae §3.1) | `lab/experiments/ssm_injection.py` | **tested — KEPT (decay=0.5)** |
 | Depth LoRA (per-loop low-rank adaptation with learned loop embeddings) | `lab/experiments/depth_lora.py` | **tested — KEPT (rank=8)** |
 | Adaptive Halting (per-position learned stop probability) | `lab/experiments/adaptive_halting.py` | **tested — KEPT (max_steps=6)** |
@@ -89,7 +89,7 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | Math RL with parameter-efficient frozen early layers | `rl.py` | queued |
 | PPG (Progressive Parameter Grouping, low-dim warmup then split) | `ppg.py` | queued |
 | Anti-pattern unlikelihood loss (penalize confident wrong-direction predictions) | `lab/experiments/anti_pattern.py` | **tested — KEPT (0.2–0.4)** |
-| GADW (Gradient Aware Dynamic Weighting for multi-loss balancing) | `gadw.py` | queued |
+| GADW (Gradient Aware Dynamic Weighting for multi-loss balancing) | `lab/experiments/gadw.py` | **tested — KEPT (with anti=0.2, positive skill both tickers blind)** |
 | Curriculum learning (recurrent loop count ramp-up) | `lab/experiments/curriculum.py` | **tested — NEUTRAL** |
 | Model averaging (EMA / SWA style weight smoothing) | `lab/experiments/ema.py` | **tested — KEPT (0.9999)** |
 | Muon optimizer (Newton-Schulz orthogonalization) | `lab/experiments/muon.py` | **tested — KEPT (0.005)** |
@@ -104,7 +104,7 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | Label smoothing (regression-adapted, target shrinkage toward batch mean) | `lab/experiments/label_smoothing.py` | **tested — KEPT (0.15/0.20)** |
 | Output L2 regularization (penalize extreme predictions) | `lab/experiments/output_reg.py` | **tested — KEPT (0.05–0.10)** |
 | Sleep capacity loss (TRIM-KV penalty for over-budget retention) | `sleep_gate.py` | queued |
-| Think depth loss (cosine similarity penalty for lazy COCONUT layers) | `training.py` | queued |
+| Think depth loss (cosine similarity penalty for lazy COCONUT layers) | `lab/experiments/latent_reasoning.py` | **tested — KEPT (0.1 with latent-steps=2); stacks with anti-pattern** |
 | BatchPrefetcher (GPU-resident ring buffer, async CPU→GPU transfer) | `training.py` | queued |
 | Auto batch tuning (find largest batch that fits in VRAM) | `training.py` | queued |
 | Mixed precision: BF16, NVFP4, FP8 via TransformerEngine | `training.py` | queued |
@@ -590,6 +590,44 @@ SleepGate: scores each position's hidden state for importance, computes a consol
 
 Best for: **DROPPED — do not use.**
 
+### `--recurrent-depth 4`
+
+Recurrent Depth Core: Mythos-style Prelude→Core→Coda with shared weights. The Prelude (one transformer block) maps input to hidden state, the Core (a transformer block with shared weights) loops 4 times, and the Coda (one transformer block) maps back to output. Zero extra params — the same 82K weights are reused across all 4 Core iterations.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Best NVDA blind of all Day 3 R4 features (18.19%, +0.040 skill). Positive NVDA skill in blind AND partial (+0.298). Zero extra params. Best nonblind ever (1.30%/2.17%).** | AAPL blind mediocre (13.25%, -0.011). Partial AAPL (13.00%, -0.004) near zero skill. Only depth=4 works — depth=2 explodes (243% AAPL). |
+
+Best for: "I want the best NVDA blind with zero param overhead."
+
+### `--gadw --anti-pattern-weight 0.2`
+
+Gradient Aware Dynamic Weighting: learns per-loss log-variance parameters for uncertainty-based multi-task loss balancing. Each loss term is weighted by exp(-log_var) with a log_var/2 regularizer (from Kendall et al. 2018, Multi-Task Learning Using Uncertainty to Weigh Losses). Without a secondary loss the module is inactive.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Positive AAPL skill (+0.074) and NVDA skill (+0.018) in blind mode. Best NVDA partial of all R4 features (13.03%, +0.349 skill). Nonblind normal (1.32%/2.19%).** | Ineffective without a secondary loss. Alone (no anti) identical to baseline. GADW+anti+rdepth=4 tradeoff: AAPL 9.90% (+0.168) but NVDA 21.78% (-0.314). Anti-pattern 0.2 without GADW is better for AAPL (9.83% vs 12.12%). |
+
+Best for: "I want multi-loss balancing with positive skill on both tickers."
+
+### `--latent-steps 2 --think-depth-weight 1.0`
+
+Think Depth Loss: cosine similarity penalty between consecutive latent reasoning steps. Discourages "lazy thinking" where hidden states barely change across steps. The penalty is `weight * (1 - cos(state[t], state[t-1]))` averaged over all steps, added to the total loss. Only applies when --latent-steps >= 2.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Best AAPL blind of all Day 3 R4 features (9.50%, +0.103 skill). AAPL DirAcc 0.476. Nonblind normal (1.38%/2.24%).** | NVDA degrades (21.43% blind, -0.291; 26.16% partial, -0.749). Strong think penalty hurts NVDA's predictive horizon — the cosine constraint makes steps too similar for longer forecasts. |
+
+Best for: "AAPL-only blind evaluation with a thinking constraint."
+
+### `--latent-steps 2 --think-depth-weight 0.1 --anti-pattern-weight 0.2`
+
+Milder think depth loss that stacks with anti-pattern unlikelihood. The two losses work on different dimensions: think depth constrains latent state change, anti-pattern penalizes wrong-direction predictions.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Best avg blind MAPE of all Day 3 R4 features and combos (14.73%). AAPL 10.33% (+0.174 best AAPL skill), NVDA 19.12% (-0.094). Best partial of any R4 combo (AAPL 11.55% +0.037, NVDA 16.11% +0.092). Stacks well.** | Both penalties push the model in opposite directions — latent smoothing vs direction punishment. At w=1.0 the combo over-constrains NVDA (21.17%, -0.269). Sweet spot is w=0.1 with anti=0.2. |
+
 ### Configs that don't stack
 
 These combinations were tested and performed strictly worse than either feature alone:
@@ -614,7 +652,10 @@ These combinations were tested and performed strictly worse than either feature 
 | muon + dropout | muon=0.005 + drop=0.01 + anti=0.2: avg 37.52% — much worse than muon alone. Input masking disrupts the gradient statistics that Newton-Schulz orthogonalization depends on. |
 | muon + label-smoothing + anti-pattern + PLE | All four: avg 124.63% (explosion). Four modifications overload the 82K model — muon optimizer + target smoothing + direction penalty + per-layer biases. |
 | GQA + anti-pattern | GQA=2 + qknorm + anti=0.4: avg 17.69% — worse than GQA alone (14.97%). Reduced attention capacity can't handle the additional gradient signal from direction penalties. |
-| SleepGate | AAA 54.47%, NVDA 90.38% in blind. The consolidation mechanism (per-position importance scoring) introduces destructive interference on the 2-layer Glint model.
+| SleepGate | AAPL 54.47%, NVDA 90.38% in blind. The consolidation mechanism (per-position importance scoring) introduces destructive interference on the 2-layer Glint model. |
+| GADW alone (no secondary loss) | Without a second loss term, GADW is a no-op. Same as baseline. Only useful with --anti-pattern-weight or other auxiliary losses. |
+| think depth 1.0 + anti=0.2 | NVDA blind 21.17% (-0.269) — worse than think depth alone (21.43%) and anti alone (20.44%). The two constraints conflict: one penalises state divergence, the other penalises confident wrong-direction predictions. |
+| GADW + anti=0.2 + rdepth=4 | Tradeoff config: AAPL 9.90% (+0.168 best) but NVDA degrades to 21.78% (-0.314). GADW+anti=0.2 without rdepth is more balanced (18.31% NVDA). |
 
 ---
 
@@ -866,6 +907,82 @@ After testing features individually, 20 ambitious combos were trained combining 
 | PLE + anti combos | **DROP** — doesn't stack, all worse than individual features |
 | PLE + nce combos | **DROP** — doesn't stack |
 | anti + nce combos | **DROP** — doesn't stack |
+
+### Day 3 (Round 4), Three features: GADW, Recurrent Depth Core, Think Depth Loss
+
+* **What**: Implemented GADW (Gradient Aware Dynamic Weighting via learned log-variance uncertainty), Recurrent Depth Core (Mythos-style Prelude→Core→Coda with shared-weight recurrence), and Think Depth Loss (cosine similarity penalty between consecutive latent reasoning steps). Swept 5 individual variants (gadw, rdepth=2, rdepth=4, thinkd=0.1, thinkd=0.5, thinkd=1.0) + 4 combinations. Top 3 full 3-mode benchmarked. 9 models trained total.
+* **Features**: `--gadw`, `--recurrent-depth` (2,4), `--think-depth-weight` (0.1, 0.5, 1.0)
+* **Compute**: NVIDIA RTX 5090, ~3 minutes total
+
+#### Full 3-mode results (top 3 variants)
+
+| Config | Mode | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill |
+|--------|------|-----------|------------|-----------|------------|
+| **thinkdepth=1.0** | blind | **9.50%** | +0.103 | 21.43% | -0.291 |
+| **thinkdepth=1.0** | nonblind | 1.38% | +0.864 | 2.24% | +0.871 |
+| **thinkdepth=1.0** | partial | 11.55% | -0.145 | 26.16% | -0.749 |
+| **GADW+anti=0.2** | blind | 12.12% | +0.074 | 18.31% | +0.018 |
+| **GADW+anti=0.2** | nonblind | **1.32%** | **+0.867** | **2.19%** | **+0.873** |
+| **GADW+anti=0.2** | partial | 12.97% | -0.036 | **13.03%** | **+0.349** |
+| **rdepth=4** | blind | 13.25% | -0.011 | 18.19% | +0.040 |
+| **rdepth=4** | nonblind | **1.30%** | **+0.867** | **2.17%** | **+0.874** |
+| **rdepth=4** | partial | 13.00% | -0.004 | 14.03% | +0.298 |
+
+#### Blind mode results (Day 3 R4 features vs baseline)
+
+| Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
+|--------|-----------|------------|-----------|------------|----------|
+| **thinkd=0.1 + anti=0.2** | 10.33% | **+0.174** | 19.12% | -0.094 | **14.73%** |
+| **thinkdepth=1.0** | **9.50%** | +0.103 | 21.43% | -0.291 | 15.47% |
+| GADW+anti+rdepth=4 | 9.90% | +0.168 | 21.78% | -0.314 | 15.84% |
+| thinkd=0.1 | 11.60% | +0.108 | 19.04% | -0.086 | 15.32% |
+| thinkd=0.5 | 15.13% | -0.162 | 19.30% | -0.108 | 17.22% |
+| thinkd=1.0 + anti=0.2 | 10.20% | +0.172 | 21.17% | -0.269 | 15.69% |
+| **GADW+anti=0.2** | 12.12% | +0.074 | **18.31%** | +0.018 | **15.22%** |
+| **rdepth=4** | 13.25% | -0.011 | **18.19%** | +0.040 | **15.72%** |
+| GADW+rdepth=4 | 13.25% | -0.011 | 18.19% | +0.040 | 15.72% |
+| baseline | 45.72% | -2.403 | 19.19% | -0.101 | 32.45% |
+
+#### Key findings
+
+* **Think Depth 1.0 achieves 9.50% AAPL blind (+0.103 skill)** — competitive with the best AAPL-blind features (anti=0.2 at 9.83%, fim=0.25 at 9.77%, SSM=0.5 at 9.37%). The cosine penalty prevents the latent state from collapsing to a fixed point across thinking steps. Only 2 latent steps needed (not 4 like standard COCONUT).
+* **GADW+anti=0.2 achieves the best NVDA partial of any R4 feature: 13.03% (+0.349 skill)**. The learned uncertainty weighting lets the model balance MSE and anti-pattern losses adaptively — the first time multi-loss weighting has been demonstrated on this benchmark.
+* **Recurrent Depth 4 achieves positive NVDA skill in blind (+0.040) AND partial (+0.298) with zero extra params**. The shared-weight recurrence naturally favors the smoother NVDA series. Depth=2 destabilises (AAPL 243%). Nonblind 1.30%/2.17% is the best ever nonblind — tied with LoRA rank=16's 1.31%.
+* **Think depth 0.1 + anti=0.2 is the best combo: 14.73% avg blind MAPE**. These two losses compose well — think depth smooths the latent path while anti-pattern penalises wrong-direction outputs. The 0.1 weight is mild enough not to over-constrain NVDA.
+* **Nonblind is invariant**: all variants score MAPE 1.30–1.38% (AAPL) / 2.17–2.24% (NVDA) with skill +0.863–0.874. Recurrent Depth 4 achieves the best nonblind ever (1.30%/2.17%).
+
+#### Updated leaderboard (blind mode)
+
+| Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
+|--------|-----------|------------|-----------|------------|----------|
+| **Muon 0.005** | 9.92% | +0.178 | 18.56% | -0.009 | **14.24%** |
+| **thinkd=0.1+anti=0.2** | 10.33% | **+0.174** | 19.12% | -0.094 | **14.73%** |
+| **SLERP 42-44 t=0.5** | 9.52% | +0.188 | 19.60% | -0.137 | 14.56% |
+| ACT-6 + SLERP 42-44 | 9.69% | **+0.190** | 19.47% | -0.125 | 14.58% |
+| **SLERP 42-44 t=0.6** | **9.41%** | +0.179 | 19.78% | -0.152 | **14.60%** |
+| **latent=4 (Day 3)** | 10.03% | +0.184 | 19.35% | -0.117 | **14.69%** |
+| fim 0.25 | 9.77% | +0.188 | 19.66% | -0.142 | 14.72% |
+| **latent=1 (Day 3)** | 11.07% | +0.137 | 18.54% | -0.030 | **14.81%** |
+| LSmooth 0.15 | 10.88% | +0.150 | 18.49% | -0.012 | **14.69%** |
+| ACT max_steps=6 | 9.87% | +0.181 | 20.58% | -0.214 | 15.23% |
+| **GADW+anti=0.2** | 12.12% | +0.074 | **18.31%** | +0.018 | **15.22%** |
+| ssm=0.5 (Day 3) | **9.37%** | +0.117 | 21.30% | -0.280 | 15.34% |
+| LoRA-8 + SLERP 42-44 | **9.38%** | +0.097 | 20.72% | -0.233 | 15.05% |
+| LoRA rank=8 | 10.09% | +0.180 | 20.64% | -0.227 | 15.36% |
+| **rdepth=4** | 13.25% | -0.011 | **18.19%** | +0.040 | **15.72%** |
+| baseline (seed 42) | 45.72% | -2.40 | 19.19% | -0.10 | 32.46% |
+
+#### Verdicts
+
+| Feature | Verdict |
+|---------|---------|
+| `--gadw` (with `--anti-pattern-weight`) | **KEEP** — best NVDA partial of R4 (+0.349 skill), positive skill both tickers blind |
+| `--recurrent-depth 4` | **KEEP** — best NVDA blind of R4 (+0.040), zero extra params, best nonblind ever |
+| `--recurrent-depth 2` | **DROP** — destabilises AAPL (243% blind) |
+| `--think-depth-weight 1.0` (with `--latent-steps 2`) | **KEEP** — best AAPL blind of R4 (9.50%, +0.103) |
+| `--think-depth-weight 0.1` (with `--latent-steps 2`, `--anti-pattern-weight 0.2`) | **KEEP** — best combo avg (14.73%), stacks with anti-pattern |
+| `--think-depth-weight 0.5` | **DROP** — no benefit over 0.1 or 1.0 |
+| `--gadw` alone (no secondary loss) | **NEUTRAL** — no-op without auxiliary loss |
 
 ### Day 3 (Round 3), Three features: Engram, SleepGate, TRIM-KV
 

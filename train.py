@@ -97,6 +97,12 @@ def parse_args():
                    help="Enable SleepGate memory consolidation. Scores and consolidates hidden states across positions.")
     p.add_argument("--trim-kv", action="store_true",
                    help="Enable TRIM-KV learned retention gate. Per-key importance scoring in self-attention.")
+    p.add_argument("--gadw", action="store_true",
+                   help="Enable Gradient Aware Dynamic Weighting for multi-loss balancing. Learns adaptive loss weights.")
+    p.add_argument("--recurrent-depth", type=int, default=0,
+                   help="Number of recurrent core iterations for Recurrent-Depth Transformer (0=disabled). Mythos-style Prelude→Core→Coda.")
+    p.add_argument("--think-depth-weight", type=float, default=0.0,
+                   help="Weight for think depth loss on latent reasoning steps (0=disabled). Penalizes lazy COCONUT steps with high cosine similarity.")
     return p.parse_args()
 
 
@@ -200,6 +206,12 @@ def main():
         flags.append("sleep")
     if args.trim_kv:
         flags.append("trimkv")
+    if args.gadw:
+        flags.append("gadw")
+    if args.recurrent_depth > 0:
+        flags.append(f"rdepth={args.recurrent_depth}")
+    if args.think_depth_weight > 0:
+        flags.append(f"thinkd={args.think_depth_weight}")
     suffix = "_" + "_".join(flags) if flags else ""
     out = out + suffix
 
@@ -238,6 +250,9 @@ def main():
         engram=args.engram,
         sleep_gate=args.sleep_gate,
         trim_kv=args.trim_kv,
+        gadw=args.gadw,
+        recurrent_depth=args.recurrent_depth,
+        think_depth_weight=args.think_depth_weight,
     )
     plot_loss_curve(history, os.path.join(out, "loss_curve.png"))
 

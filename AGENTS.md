@@ -446,6 +446,16 @@ python train.py --engram
 python train.py --sleep-gate  # DROPPED
 python train.py --trim-kv
 
+# Day 3 R4 — GADW, Recurrent Depth, Think Depth Loss
+python train.py --gadw  # needs --anti-pattern-weight to have effect
+python train.py --recurrent-depth 4
+python train.py --latent-steps 2 --think-depth-weight 0.1
+python train.py --latent-steps 2 --think-depth-weight 1.0
+
+# Day 3 R4 — combos
+python train.py --gadw --anti-pattern-weight 0.2
+python train.py --latent-steps 2 --think-depth-weight 0.1 --anti-pattern-weight 0.2
+
 # Benchmark all modes
 python benchmark.py --model runs/.../model.pt --mode blind --no-plot
 python benchmark.py --model runs/.../model.pt --mode nonblind --no-plot
