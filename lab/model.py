@@ -176,6 +176,12 @@ class TinyForecaster(nn.Module):
         else:
             self.ssm = None
 
+        if cfg.ple:
+            from .experiments.ple import PerLayerEmbeddings
+            self.ple = PerLayerEmbeddings(cfg.d_model, cfg.n_layers)
+        else:
+            self.ple = None
+
         self._ponder_cost = None
         self._think_cost = None
 
@@ -193,6 +199,8 @@ class TinyForecaster(nn.Module):
             self._ponder_cost = ponder_cost
         else:
             for i, blk in enumerate(self.blocks):
+                if self.ple is not None:
+                    h = self.ple(h, i)
                 h = blk(h)
                 if self.ssm is not None:
                     h = self.ssm(h, i)
@@ -209,6 +217,7 @@ class TinyForecaster(nn.Module):
             self._think_cost = think_loss
 
         h = self.norm(h)
+        self._last_hidden = h
         main = self.head(h[:, -1])
         if self.mtp_heads is not None:
             mtp = {}

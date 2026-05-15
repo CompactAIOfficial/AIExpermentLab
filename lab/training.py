@@ -37,6 +37,8 @@ def train_model(
     lora_rank: int = 0, lora_alpha: float = 1.0,
     latent_steps: int = 0, ssm_decay: float = 0.0,
     curriculum_epochs: int = 0,
+    ple: bool = False, anti_pattern_weight: float = 0.0,
+    nce_weight: float = 0.0,
 ):
     os.makedirs(run_dir, exist_ok=True)
     set_seed(train_cfg.seed)
@@ -61,6 +63,11 @@ def train_model(
         model_cfg.ssm_decay = ssm_decay
         from .experiments.ssm_injection import SSMInjection
         model.ssm = SSMInjection(model_cfg.d_model, model_cfg.n_layers, decay_init=ssm_decay).to(device)
+
+    if ple:
+        model_cfg.ple = True
+        from .experiments.ple import PerLayerEmbeddings
+        model.ple = PerLayerEmbeddings(model_cfg.d_model, model_cfg.n_layers).to(device)
 
     from .experiments.input_dropout import apply_input_dropout
     from .experiments.output_reg import output_regularization
@@ -159,6 +166,12 @@ def train_model(
                 loss = loss + model._ponder_cost
             if hasattr(model, '_think_cost') and model._think_cost is not None:
                 loss = loss + model._think_cost
+            if anti_pattern_weight > 0:
+                from .experiments.anti_pattern import anti_pattern_loss
+                loss = loss + anti_pattern_loss(pred, xb, anti_pattern_weight)
+            if nce_weight > 0 and hasattr(model, '_last_hidden') and model._last_hidden is not None:
+                from .experiments.nce_context import nce_context_loss
+                loss = loss + nce_context_loss(model._last_hidden, nce_weight)
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.grad_clip)

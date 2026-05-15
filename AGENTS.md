@@ -429,6 +429,18 @@ python train.py --mhc-streams 4
 # Day 2 — GQA + QK-norm
 python train.py --gqa-kv-heads 2 --qk-norm
 
+# Day 3 R2 — Per-Layer Embeddings
+python train.py --ple
+
+# Day 3 R2 — Anti-pattern unlikelihood (best AAPL blind)
+python train.py --anti-pattern-weight 0.2
+
+# Day 3 R2 — Anti-pattern unlikelihood (positive skill both)
+python train.py --anti-pattern-weight 0.4
+
+# Day 3 R2 — NCE context loss (mild regularizer)
+python train.py --nce-weight 0.2
+
 # Benchmark all modes
 python benchmark.py --model runs/.../model.pt --mode blind --no-plot
 python benchmark.py --model runs/.../model.pt --mode nonblind --no-plot
@@ -443,4 +455,4 @@ Shard:  d_model=128, n_heads=4, n_layers=4, d_ff=256  (656K params)
 Prism:  d_model=256, n_heads=8, n_layers=6, d_ff=512  (2.6M params)
 ```
 
-Always use Glint (82K params) for quick experiments. It's fast enough on CPU that you can batch 4 training runs in parallel without waiting.
+Always use Glint (82K params) for quick experiments. Use `--device cuda` for all training runs — the GPU is available.

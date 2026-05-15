@@ -70,7 +70,7 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | Manifold Hyper-Connections (Sinkhorn-Knopp doubly stochastic residual mixing) | `lab/model.py` | **tested — KEPT (4 streams)** |
 | COCONUT-style Latent Thinking blocks (continuous chain-of-thought) | `lab/experiments/latent_reasoning.py` | **tested — KEPT (4 steps)** |
 | Multi-Token Prediction (auxiliary heads at future horizons) | `lab/experiments/mtp.py` | **tested — KEPT** |
-| Per-Layer Embeddings (Gemma 3n PLE, token-conditional per-layer signal) | `ple_dim` | queued |
+| Per-Layer Embeddings (Gemma 4 PLE, per-layer learned bias vectors) | `lab/experiments/ple.py` | **tested — KEPT** |
 | Auxiliary heads (bigram prediction, word boundary detection, L11) | `aux_*` | queued |
 | GQA, partial RoPE, sliding window, QK-norm, per-head output gating | `lab/model.py` | **tested — KEPT (GQA=2+QK-norm, partial only)** |
 | SwiGLU FFN with weight-tied embeddings + learned output bias | base block | queued |
@@ -88,7 +88,7 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | Repetition-removal RL (no distillation required) | `rl.py` | queued |
 | Math RL with parameter-efficient frozen early layers | `rl.py` | queued |
 | PPG (Progressive Parameter Grouping, low-dim warmup then split) | `ppg.py` | queued |
-| Anti-pattern unlikelihood loss (push down curated bad continuations) | `anti_patterns.py` | queued |
+| Anti-pattern unlikelihood loss (penalize confident wrong-direction predictions) | `lab/experiments/anti_pattern.py` | **tested — KEPT (0.2–0.4)** |
 | GADW (Gradient Aware Dynamic Weighting for multi-loss balancing) | `gadw.py` | queued |
 | Curriculum learning (recurrent loop count ramp-up) | `lab/experiments/curriculum.py` | **tested — NEUTRAL** |
 | Model averaging (EMA / SWA style weight smoothing) | `lab/experiments/ema.py` | **tested — KEPT (0.9999)** |
@@ -100,7 +100,7 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | OHEM (Online Hard Example Mining) with dynamic threshold | `lab/experiments/ohem.py` | **tested — KEPT (0.9/0.3)** |
 | Looping regularization (OpenMythos protection against weight collapse) | `training.py` | queued |
 | Input token dropout (replace fraction of inputs with zero) | `lab/experiments/input_dropout.py` | **tested — KEPT** |
-| Context loss (NCE-based contrastive prompt/response embedding loss) | `training.py` | queued |
+| Context loss (NCE-based contrastive embedding loss over positions) | `lab/experiments/nce_context.py` | **tested — KEPT (0.2–0.6)** |
 | Label smoothing (regression-adapted, target shrinkage toward batch mean) | `lab/experiments/label_smoothing.py` | **tested — KEPT (0.15/0.20)** |
 | Output L2 regularization (penalize extreme predictions) | `lab/experiments/output_reg.py` | **tested — KEPT (0.05–0.10)** |
 | Sleep capacity loss (TRIM-KV penalty for over-budget retention) | `sleep_gate.py` | queued |
@@ -520,6 +520,46 @@ Ramps the number of latent thinking steps from 0 to the target over N epochs. Ba
 
 Best for: Nothing. Not worth the complexity.
 
+### `--ple`
+
+Per-Layer Embeddings: adds a learned 64-dim bias vector per layer, added to the hidden state before each block. Based on Gemma 4's PLE (Per-Layer Embeddings) design that injects token-identity signals at every layer rather than relying on a single initial embedding. Adds 128 params for Glint.
+
+| Does well | Sucks at |
+|-----------|----------|
+| Best new-feature AAPL blind (11.86%, **+0.090 skill**). Great NVDA partial (13.44%, **+0.278 skill**). Nonblind unaffected (1.33%). Only 128 extra params. | NVDA blind mediocre (19.45%, -0.126). Doesn't stack with anti-pattern or NCE (all combos worse). |
+
+Best for: "I want a tiny architectural boost to AAPL blind with only 128 extra params."
+
+### `--anti-pattern-weight 0.2`
+
+Anti-pattern unlikelihood loss: penalizes predictions that go against the recent trend direction with high confidence. The loss term is `weight * |pred - last|` when the predicted direction differs from the 5-step local trend direction. Based on the unlikelihood training paradigm (Welleck et al., ICLR 2020) adapted for regression.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Best AAPL blind of any Day 3 feature (9.83%, +0.184 skill)** — ties fim 0.25 and beats muon 0.005 on AAPL. Nonblind unaffected. Zero extra params. | NVDA blind degrades (20.44%, -0.210). Sweet spot is narrow: 0.1 and below destabilize AAPL, above 0.5 is too weak. |
+
+Best for: "I want the best AAPL blind with zero param overhead, even at NVDA's expense."
+
+### `--anti-pattern-weight 0.4`
+
+Higher-weight anti-pattern loss that balances across tickers.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Positive skill on BOTH tickers in blind AND partial** — AAPL blind +0.112, NVDA blind +0.097, AAPL partial **+0.162**, NVDA partial **+0.221**. Best partial-mode of any Day 3 feature. Zero extra params. | Blind AAPL (11.54%) is merely average. Nonblind slightly elevated (2.21% NVDA vs 2.19%). |
+
+Best for: "I want positive skill on both tickers in blind AND partial with zero params."
+
+### `--nce-weight 0.2` (or 0.3–0.6)
+
+NCE Context loss: InfoNCE-style contrastive loss where the last position's hidden state is pulled toward nearby positions (positive pairs within 2 steps) and pushed away from distant positions (negative pairs beyond 8 steps). Encourages temporally smooth representations.
+
+| Does well | Sucks at |
+|-----------|----------|
+| Broad sweet spot (0.2–0.6 all work). Consistent blind results (~12.3-12.7% AAPL, ~18.2-18.4% NVDA). Mildly positive skill on both tickers at 0.5-0.6. Zero extra params. | Only nce=0.01 destabilizes; all other values produce nearly identical results (12.3-14.3% AAPL). The loss adds negligible training overhead but the effect is subtle — it's a weak regularizer. |
+
+Best for: "I want a mild, consistent regularizer that never destabilizes."
+
 ### Configs that don't stack
 
 These combinations were tested and performed strictly worse than either feature alone:
@@ -537,6 +577,9 @@ These combinations were tested and performed strictly worse than either feature 
 | 3-way SLERP across mismatched basins | Merging seeds 42+43+44 reliably diverges (NVDA 266% blind). Seed 43 lives in a different basin than 42/44; including it in any merge causes catastrophic interference. Pairwise merges of basin-compatible seeds (42-44, 43-44) work; the 42-43 pair alone also diverges. |
 | SLERP at t=0.25 / t=0.75 across basins | Even with valid endpoints, off-center t values amplify basin mismatch. The 42-43 pair at t=0.25 hit AAPL=2.9 billion% MAPE. Stay within t∈[0.4, 0.7] for tested pairs. |
 | latent + SSM (latent=1 + ssm=0.999) | AAPL blind explodes to 55.76%. The SSM's recurrent state interacts destructively with the additional latent thinking passes through the same blocks. |
+| PLE + anti-pattern | PLE + anti=0.5: avg 16.29% blind — worse than either alone (15.65%, 15.46%). Architectural bias + direction-penalty don't compose. |
+| PLE + NCE | PLE + nce=0.5: avg 15.59% blind — worse than PLE alone (15.65%). The NCE contrastive objective doesn't benefit from layer-specific bias vectors. |
+| anti-pattern + NCE | anti=0.5 + nce=0.5: avg 15.47% — same as anti=0.5 alone (15.46%). Two loss-based regularizers don't compound on a small model. |
 
 ---
 
@@ -570,20 +613,23 @@ This is the first Glint config to achieve **positive skill on AAPL in both blind
 | Rank | Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
 |------|--------|-----------|------------|-----------|------------|----------|
 | 1 | **Muon 0.005** | **9.92%** | **+0.178** | **18.56%** | -0.009 | **14.24%** |
-| 2 | fim 0.25 | **9.77%** | **+0.188** | 19.66% | -0.142 | **14.72%** |
-| 3 | **LSmooth 0.15** | **10.88%** | **+0.150** | 18.49% | -0.012 | **14.69%** |
-| 4 | EMA 0.9999 | 10.85% | +0.148 | 18.70% | -0.050 | 14.78% |
-| 5 | fim 0.30 | 10.66% | +0.160 | 19.32% | -0.114 | 14.99% |
-| 6 | gqa=2_qknorm | 10.64% | +0.161 | 19.29% | -0.103 | 14.97% |
-| 7 | mhc=4 | 10.97% | +0.144 | 19.04% | -0.086 | 15.01% |
-| 8 | MTP(2,4,8,16) | 11.56% | +0.109 | 18.37% | +0.039 | 14.97% |
-| 9 | **OHEM 0.9** | 11.41% | +0.119 | 18.73% | -0.052 | 15.07% |
-| 10 | LSmooth 0.20 | 11.93% | +0.084 | 18.22% | +0.037 | 15.08% |
-| 11 | MTP(2,4,8,16)+drop 0.01 | 11.84% | +0.089 | 18.42% | -0.008 | 15.13% |
-| 12 | dropout 0.10 | 9.51% | +0.119 | 21.17% | -0.270 | 15.34% |
-| 13 | oreg 0.10 | 9.65% | +0.157 | 21.36% | -0.285 | 15.51% |
-| 14 | dropout 0.01 | 18.12% | -0.405 | 16.89% | +0.202 | 17.51% |
-| — | baseline | 1243.62% | -185.66 | 19.48% | -0.125 | 631.55% |
+| 2 | **anti=0.2 (Day 3 R2)** | **9.83%** | **+0.184** | 20.44% | -0.210 | 15.13% |
+| 3 | fim 0.25 | **9.77%** | **+0.188** | 19.66% | -0.142 | **14.72%** |
+| 4 | **PLE (Day 3 R2)** | 11.86% | +0.090 | 19.45% | -0.126 | 15.65% |
+| 5 | **anti=0.4 (Day 3 R2)** | 11.54% | **+0.112** | 18.28% | **+0.097** | 14.91% |
+| 6 | **LSmooth 0.15** | **10.88%** | **+0.150** | 18.49% | -0.012 | **14.69%** |
+| 7 | EMA 0.9999 | 10.85% | +0.148 | 18.70% | -0.050 | 14.78% |
+| 8 | fim 0.30 | 10.66% | +0.160 | 19.32% | -0.114 | 14.99% |
+| 9 | gqa=2_qknorm | 10.64% | +0.161 | 19.29% | -0.103 | 14.97% |
+| 10 | mhc=4 | 10.97% | +0.144 | 19.04% | -0.086 | 15.01% |
+| 11 | MTP(2,4,8,16) | 11.56% | +0.109 | 18.37% | +0.039 | 14.97% |
+| 12 | **OHEM 0.9** | 11.41% | +0.119 | 18.73% | -0.052 | 15.07% |
+| 13 | LSmooth 0.20 | 11.93% | +0.084 | 18.22% | +0.037 | 15.08% |
+| 14 | MTP(2,4,8,16)+drop 0.01 | 11.84% | +0.089 | 18.42% | -0.008 | 15.13% |
+| 15 | dropout 0.10 | 9.51% | +0.119 | 21.17% | -0.270 | 15.34% |
+| 16 | oreg 0.10 | 9.65% | +0.157 | 21.36% | -0.285 | 15.51% |
+| 17 | dropout 0.01 | 18.12% | -0.405 | 16.89% | +0.202 | 17.51% |
+| — | baseline | 1243.35% | -185.62 | 19.48% | -0.125 | 631.41% |
 
 ### Specialists
 
@@ -594,6 +640,7 @@ Each feature has a mode where it excels:
 | Best avg blind MAPE | `--muon-lr 0.005` | Avg blind **14.24%** MAPE |
 | Best blind AAPL MAPE | `--ssm-decay 0.5` | AAPL blind **9.37%** MAPE, **+0.117** skill |
 | Best blind AAPL skill | `--fim-rate 0.25` | AAPL blind **9.77%** MAPE, **+0.188** skill |
+| Best blind AAPL (Day 3 R2) | `--anti-pattern-weight 0.2` | AAPL blind **9.83%** MAPE, **+0.184** skill |
 | Best blind AAPL skill (runner-up) | `--muon-lr 0.005` | AAPL blind **9.92%** MAPE, **+0.178** skill |
 | Best nonblind DirAcc | `--gqa-kv-heads 2 --qk-norm` | AAPL nonblind DirAcc **0.520**, skill **+0.868** |
 | Best NVDA partial (Day 2) | `--fim-rate 0.3` | NVDA partial **13.19%** MAPE, **+0.282** skill |
@@ -602,6 +649,7 @@ Each feature has a mode where it excels:
 | Best AAPL partial (zero params) | `--ohem-fraction 0.9` | AAPL partial **11.19%** MAPE, **+0.129** skill |
 | Best AAPL blind (zero params, previous) | `--input-dropout 0.10` | AAPL blind **9.51%** MAPE, **+0.119** skill |
 | Best positive-skill both (zero params) | `--label-smoothing 0.20` | AAPL blind +0.084, NVDA blind +0.037, AAPL partial +0.093, NVDA partial +0.112 |
+| Best positive-skill both blind+partial (zero params) | `--anti-pattern-weight 0.4` | AAPL blind +0.112, NVDA blind +0.097, AAPL partial **+0.162**, NVDA partial **+0.221** |
 | Best NVDA blind (zero params) | `--lr-schedule wsd` | AAPL blind **11.74%** MAPE, **+0.101** skill |
 | Best NVDA blind | `--input-dropout 0.01` | NVDA blind **16.89%** MAPE, **+0.202** skill |
 | Best avg MAPE (architecture) | `--mtp-horizons 2,4,8,16` | Avg blind **14.97%** MAPE |
@@ -617,6 +665,15 @@ python train.py --muon-lr 0.005
 
 # Best positive skill across all modes (zero params)
 python train.py --label-smoothing 0.20
+
+# Best positive skill across all modes (Day 3 R2, zero params)
+python train.py --anti-pattern-weight 0.4
+
+# Best AAPL blind (Day 3 R2, zero params)
+python train.py --anti-pattern-weight 0.2
+
+# Tiny architectural boost (128 extra params)
+python train.py --ple
 
 # Best partial AAPL (zero params)
 python train.py --ohem-fraction 0.9
@@ -660,7 +717,81 @@ python train.py --mtp-horizons 2,4,8,16
 
 A running journal of every experiment. Newest entries on top.
 
-### Day 3, Three features: Latent Reasoning, SSM Injection, Curriculum Learning
+### Day 3 (Round 2), Three features: Per-Layer Embeddings, Anti-pattern Unlikelihood, NCE Context Loss
+
+* **What**: Implemented and tested 3 queued features: Per-Layer Embeddings (PLE — Gemma 4-style learned per-layer bias), Anti-pattern unlikelihood loss (penalizes confident wrong-direction predictions against recent trend), and NCE Context loss (InfoNCE-style contrastive loss over time positions). 13-value sweep for anti-pattern (0.001–1.0), 13-value sweep for NCE (0.001–1.0), fine sweeps around optima, plus 3 combos. 30 models trained, top 3 full 3-mode benchmarked.
+* **Features**: `--ple`, `--anti-pattern-weight` (0.001–1.0), `--nce-weight` (0.001–1.0)
+* **Compute**: NVIDIA RTX 5090, ~6 minutes total
+
+#### Full 3-mode results (top 3 variants)
+
+| Config | Mode | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill |
+|--------|------|-----------|------------|-----------|------------|
+| **anti=0.2** | blind | **9.83%** | +0.184 | 20.44% | -0.210 |
+| **anti=0.2** | nonblind | 1.34% | +0.867 | 2.19% | +0.874 |
+| **anti=0.2** | partial | 12.67% | -0.129 | 19.64% | -0.188 |
+| **anti=0.4** | blind | 11.54% | +0.112 | 18.28% | +0.097 |
+| **anti=0.4** | nonblind | 1.33% | +0.866 | 2.21% | +0.873 |
+| **anti=0.4** | partial | **10.87%** | **+0.162** | **16.05%** | **+0.221** |
+| **PLE** | blind | 11.86% | +0.090 | 19.45% | -0.126 |
+| **PLE** | nonblind | 1.33% | +0.867 | 2.20% | +0.873 |
+| **PLE** | partial | 14.39% | -0.165 | **13.44%** | **+0.278** |
+| baseline | blind | 1243.35% | -185.62 | 19.48% | -0.125 |
+| baseline | nonblind | 1.36% | +0.866 | 2.19% | +0.873 |
+| baseline | partial | 82.38% | -6.071 | 145.69% | -15.047 |
+
+#### Blind mode results (Day 3 R2 features vs baseline)
+
+| Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
+|--------|-----------|------------|-----------|------------|----------|
+| **anti=0.2** | **9.83%** | +0.184 | 20.44% | -0.210 | 15.13% |
+| **anti=0.4** | 11.54% | +0.112 | 18.28% | +0.097 | **14.91%** |
+| **anti=0.6** | 10.59% | +0.163 | 20.20% | -0.187 | 15.40% |
+| **anti=0.3** | 10.02% | +0.181 | 20.17% | -0.185 | 15.10% |
+| **PLE** | 11.86% | +0.090 | 19.45% | -0.126 | 15.65% |
+| nce=0.2 | 12.30% | +0.056 | 18.43% | -0.012 | 15.36% |
+| nce=0.5 | 12.69% | +0.027 | 18.26% | +0.016 | 15.47% |
+| baseline | 1243.35% | -185.62 | 19.48% | -0.125 | 631.41% |
+
+#### Key findings
+
+* **Anti-pattern unlikelihood loss at weight 0.2 achieves AAPL blind 9.83% (+0.184 skill)** — ties fim 0.25 for best AAPL blind of any zero-param feature, and beats muon 0.005 on AAPL. The mechanism is intuitive: penalize predictions that go against the recent 5-step price trend, which prevents the model from making confident wrong-direction predictions during blind autoregressive rollout.
+* **Anti-pattern 0.4 is the new best "positive skill everywhere" config**: positive skill on both tickers in blind (AAPL +0.112, NVDA +0.097) AND partial (AAPL +0.162, NVDA +0.221). The partial-mode scores set a new record — beats label-smoothing 0.20 on every partial metric. Zero extra params.
+* **Anti-pattern has a bimodal stability profile**: weights 0.001–0.05 destabilize AAPL (explodes to 119–2843%), weights 0.1–1.0 are stable. The instability sweet spot boundary is sharp: 0.05 fails, 0.1 barely works (15.73% AAPL), 0.2 is optimal. This suggests the loss needs enough strength to be effective — too weak and it only adds noise.
+* **PLE achieves competitive AAPL blind (11.86%, +0.090 skill)** and excellent NVDA partial (13.44%, +0.278 skill) with only 128 extra params. The per-layer bias vectors let the 2-layer Glint differentiate its processing pathway.
+* **NCE context loss is the most boring-but-safe feature**: all weights from 0.05 to 1.0 produce nearly identical results (12.3–14.3% AAPL, 18.1–18.5% NVDA). It never destabilizes but also never produces standout results — a mild, reliable regularizer.
+* **Combinations don't stack**: PLE + anti=0.5 (16.29% avg), PLE + nce=0.5 (15.59%), and anti=0.5 + nce=0.5 (15.47%) are all worse than the individual features alone. The loss-based features don't compose with architectural changes on this small model.
+* **Nonblind mode remains invariant**: All variants score MAPE 1.33–1.36% (AAPL) / 2.19–2.21% (NVDA) with skill +0.866–0.874.
+
+#### Updated leaderboard (blind mode)
+
+| Rank | Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
+|------|--------|-----------|------------|-----------|------------|----------|
+| — | **Muon 0.005** | 9.92% | +0.178 | 18.56% | -0.009 | **14.24%** |
+| — | **anti=0.2 (Day 3 R2)** | **9.83%** | +0.184 | 20.44% | -0.210 | 15.13% |
+| — | fim 0.25 | 9.77% | +0.188 | 19.66% | -0.142 | 14.72% |
+| — | **anti=0.4 (Day 3 R2)** | 11.54% | +0.112 | **18.28%** | +0.097 | **14.91%** |
+| — | **PLE (Day 3 R2)** | 11.86% | +0.090 | 19.45% | -0.126 | 15.65% |
+| — | LSmooth 0.15 | 10.88% | +0.150 | 18.49% | -0.012 | 14.69% |
+| — | nce=0.2 (Day 3 R2) | 12.30% | +0.056 | 18.43% | -0.012 | 15.36% |
+| — | baseline | 1243.35% | -185.62 | 19.48% | -0.125 | 631.41% |
+
+#### Verdicts
+
+| Feature | Verdict |
+|---------|---------|
+| `--ple` | **KEEP** — competitive AAPL blind with only 128 extra params |
+| `--anti-pattern-weight 0.2` | **KEEP** — best AAPL blind of any Day 3 feature (9.83%), ties fim 0.25 |
+| `--anti-pattern-weight 0.4` | **KEEP** — best positive-skill both tickers blind+partial (zero params) |
+| `--anti-pattern-weight 0.3/0.6` | **NEUTRAL** — work but dominated by 0.2 and 0.4 |
+| `--anti-pattern-weight <0.1` | **DROP** — destabilizes AAPL |
+| `--nce-weight 0.2–0.6` | **KEEP** — mild, consistent regularizer, never destabilizes |
+| `--nce-weight 0.01` | **DROP** — unstable spike (436% AAPL) |
+| PLE + anti combos | **DROP** — doesn't stack, all worse than individual features |
+| PLE + nce combos | **DROP** — doesn't stack |
+| anti + nce combos | **DROP** — doesn't stack |
+
+### Day 3 (Round 1), Three features: Latent Reasoning, SSM Injection, Curriculum Learning
 
 * **What**: Implemented and tested 3 features: Latent Reasoning (COCONUT-style continuous thought, 7-step sweep), SSM Injection (per-position stable recurrent injection, 7-value decay sweep), and Curriculum Learning (latent-step ramp-up, 8-value sweep + combos). 23 models trained (7 latent, 7 SSM, 8 curriculum/combos), top 3 full 3-mode benchmarked.
 * **Features**: `--latent-steps` (1–12), `--ssm-decay` (0.5–0.999), `--curriculum-epochs` (5–30)

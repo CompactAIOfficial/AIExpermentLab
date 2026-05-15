@@ -24,6 +24,7 @@ class ModelConfig:
     latent_steps: int = 0
     ssm_decay: float = 0.0
     curriculum_epochs: int = 0
+    ple: bool = False
 
 
 @dataclass

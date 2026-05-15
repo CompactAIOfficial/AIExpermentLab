@@ -79,6 +79,12 @@ def parse_args():
                    help="SSM recurrent injection decay (0=disabled). Adds state-space model path through blocks.")
     p.add_argument("--curriculum-epochs", type=int, default=0,
                    help="Ramp latent steps from 0 to full over this many epochs (0=instant).")
+    p.add_argument("--ple", action="store_true",
+                   help="Enable Per-Layer Embeddings (PLE). Adds learned per-layer bias vectors to hidden states.")
+    p.add_argument("--anti-pattern-weight", type=float, default=0.0,
+                   help="Weight for anti-pattern unlikelihood loss (0=disabled). Penalizes confident wrong-direction predictions.")
+    p.add_argument("--nce-weight", type=float, default=0.0,
+                   help="Weight for NCE context contrastive loss (0=disabled). Pulls nearby positions together, pushes distant apart.")
     return p.parse_args()
 
 
@@ -170,6 +176,12 @@ def main():
         flags.append(f"ssm={args.ssm_decay}")
     if args.curriculum_epochs > 0:
         flags.append(f"curric={args.curriculum_epochs}")
+    if args.ple:
+        flags.append("ple")
+    if args.anti_pattern_weight > 0:
+        flags.append(f"anti={args.anti_pattern_weight}")
+    if args.nce_weight > 0:
+        flags.append(f"nce={args.nce_weight}")
     suffix = "_" + "_".join(flags) if flags else ""
     out = out + suffix
 
@@ -202,6 +214,9 @@ def main():
         latent_steps=args.latent_steps,
         ssm_decay=args.ssm_decay,
         curriculum_epochs=args.curriculum_epochs,
+        ple=args.ple,
+        anti_pattern_weight=args.anti_pattern_weight,
+        nce_weight=args.nce_weight,
     )
     plot_loss_curve(history, os.path.join(out, "loss_curve.png"))
 
