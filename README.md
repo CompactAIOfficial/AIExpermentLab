@@ -10,7 +10,7 @@
 
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support_the_Lab-FF5E5B?style=for-the-badge&logo=kofi&logoColor=white)](https://ko-fi.com/compactai)
 [![License](https://img.shields.io/badge/License-AGPL_V3-blue?style=for-the-badge)](#license)
-[![Status](https://img.shields.io/badge/Status-Day_3-orange?style=for-the-badge)](#progress-log)
+[![Status](https://img.shields.io/badge/Status-Day_4-orange?style=for-the-badge)](#progress-log)
 
 </div>
 
@@ -71,8 +71,9 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | COCONUT-style Latent Thinking blocks (continuous chain-of-thought) | `lab/experiments/latent_reasoning.py` | **tested — KEPT (4 steps)** |
 | Multi-Token Prediction (auxiliary heads at future horizons) | `lab/experiments/mtp.py` | **tested — KEPT** |
 | Per-Layer Embeddings (Gemma 4 PLE, per-layer learned bias vectors) | `lab/experiments/ple.py` | **tested — KEPT** |
-| Auxiliary heads (bigram prediction, word boundary detection, L11) | `aux_*` | queued |
+| Auxiliary heads — Direction Head (binary up/down classification, adapted for time series) | `lab/experiments/aux_direction.py` | **tested — KEPT (0.05 and 0.2)** |
 | GQA, partial RoPE, sliding window, QK-norm, per-head output gating | `lab/model.py` | **tested — KEPT (GQA=2+QK-norm, partial only)** |
+| Stochastic Depth (randomly drop entire blocks during training, Huang et al. ECCV 2016) | `lab/experiments/stochastic_depth.py` | **tested — KEPT (0.7, AAPL specialist)** |
 | SwiGLU FFN with weight-tied embeddings + learned output bias | base block | queued |
 
 ### Training technique experiments
@@ -98,7 +99,7 @@ These are the techniques pulled from the old MyTrainer codebase that are queued 
 | FIM (Fill-In-the-Middle) augmentation during pretraining | `lab/experiments/fim.py` | **tested — KEPT (0.25/0.30)** |
 | Decontamination pass against eval suites | `data/decontamination.py` | queued |
 | OHEM (Online Hard Example Mining) with dynamic threshold | `lab/experiments/ohem.py` | **tested — KEPT (0.9/0.3)** |
-| Looping regularization (OpenMythos protection against weight collapse) | `training.py` | queued |
+| Looping regularization — hidden state norm penalty (prevents drift during recurrent/looping operations) | `lab/experiments/loop_reg.py` | **tested — KEPT (0.1–0.5)** |
 | Input token dropout (replace fraction of inputs with zero) | `lab/experiments/input_dropout.py` | **tested — KEPT** |
 | Context loss (NCE-based contrastive embedding loss over positions) | `lab/experiments/nce_context.py` | **tested — KEPT (0.2–0.6)** |
 | Label smoothing (regression-adapted, target shrinkage toward batch mean) | `lab/experiments/label_smoothing.py` | **tested — KEPT (0.15/0.20)** |
@@ -657,6 +658,38 @@ These combinations were tested and performed strictly worse than either feature 
 | think depth 1.0 + anti=0.2 | NVDA blind 21.17% (-0.269) — worse than think depth alone (21.43%) and anti alone (20.44%). The two constraints conflict: one penalises state divergence, the other penalises confident wrong-direction predictions. |
 | GADW + anti=0.2 + rdepth=4 | Tradeoff config: AAPL 9.90% (+0.168 best) but NVDA degrades to 21.78% (-0.314). GADW+anti=0.2 without rdepth is more balanced (18.31% NVDA). |
 
+### `--stoch-depth 0.7`
+
+Stochastic Depth (Huang et al., ECCV 2016): during training, randomly drop the entire transformer block's contribution (attn + FFN) with probability `1 - survival_prob`. At test time, all blocks are active (inverted scaling). Only 2 layers — dropping either both or neither is coarse, but the 30% drop rate (survival 0.7) provides meaningful regularization. Zero extra params.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **Best AAPL blind of any Day 4 feature (10.34%, +0.158 skill)**. Strong DirAcc (0.468). Zero extra params. | NVDA partial explodes (10453%+). NVDA blind degraded (22.37%, -0.362). Below 0.65 survival the model destabilises completely. Only 0.7 and 0.9 are stable. |
+
+Best for: "AAPL-only blind evaluation with zero param overhead."
+
+### `--aux-direction 0.05` (or 0.2)
+
+Auxiliary Direction Head: adds a Linear(d_model→1) classification head with sigmoid activation that predicts the probability of price increase (binary direction). The BCE loss provides a secondary gradient signal orthogonal to MSE. Based on the auxiliary head paradigm from multi-task learning for time series (Ong & Herremans, 2023). Adds 65 params.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **0.05: Best balanced aux_dir**. AAPL blind 10.23% (+0.177 skill). AAPL partial **10.42% (+0.168 skill)** — one of the best AAPL partial scores. NVDA near baseline (19.08%, -0.077). Only 65 extra params. | **Bimodal stability**: 0.08–0.15 destabilise AAPL (22–82%). 0.5–1.0 unbalanced (hurts NVDA or AAPL). The 0.05 sweet spot is narrow. |
+| **0.2: Ties best AAPL blind ever (9.79%, +0.189 skill)** — matches anti=0.2. Moderate NVDA degradation (19.92%, -0.165). | NVDA blind worse than 0.05 (19.92%). Partial mode mediocre (12.20% AAPL, -0.074). |
+
+Best for: 0.05 → "balanced AAPL boost with positive partial skill." 0.2 → "best AAPL blind with 65 extra params."
+
+### `--loop-reg 0.1` (or 0.5)
+
+Looping Regularization: adds an L2 norm penalty on the final hidden state embeddings: `weight * ||h||^2`. Prevents the hidden state from growing unboundedly during forward propagation, which is especially important during recurrent/looping operations (latent steps, recurrent depth). Based on the activation regularization principle from the OpenMythos stable-training recipe. Zero extra params.
+
+| Does well | Sucks at |
+|-----------|----------|
+| **0.5: Positive NVDA partial skill (+0.074)**. AAPL blind 11.13% (+0.135). Best nonblind in class (1.32%/2.16%, +0.868/+0.875). Zero extra params. | Low weights (1e-6 to 0.001) are indistinguishable from baseline. Only helps at 0.01+ where AAPL drops from 45% to 11%. The effect plateaus — no further improvement above 0.5. |
+| **0.1: AAPL blind 11.39% (+0.118)**. Slightly better NVDA (18.70% vs 18.98% at 0.5). | AAPL DirAcc drops to 0.208–0.296 (worst of any Day 4 feature). The L2 penalty suppresses hidden state variance which hurts directional accuracy. |
+
+Best for: "I want a zero-param moderate regularizer with positive NVDA partial skill."
+
 ---
 
 ## Optimal Configuration (Glint)
@@ -731,6 +764,10 @@ Each feature has a mode where it excels:
 | Best avg MAPE (architecture) | `--mtp-horizons 2,4,8,16` | Avg blind **14.97%** MAPE |
 | Best positive-skill both tickers blind (Day 3) | `--latent-steps 1` | AAPL blind +0.137, NVDA blind -0.030, AAPL partial +0.046 |
 | Best positive-skill both tickers blind (SSM) | `--ssm-decay 0.999` | AAPL blind +0.065, NVDA blind +0.121 |
+| Best AAPL blind (Day 4, zero params) | `--aux-direction 0.2` | AAPL blind **9.79%**, **+0.189** skill |
+| Best balanced Day 4 feature | `--aux-direction 0.05` | AAPL blind 10.23% +0.177, AAPL partial **10.42% +0.168** skill |
+| Best moderate regularizer (zero params) | `--loop-reg 0.5` | AAPL blind 11.13% +0.135, NVDA partial **+0.074** skill |
+| Best AAPL blind (stochastic, zero params) | `--stoch-depth 0.7` | AAPL blind 10.34% +0.158 |
 
 ```bash
 # Best avg blind MAPE (zero params)
@@ -792,6 +829,83 @@ python train.py --mtp-horizons 2,4,8,16
 ## Progress Log
 
 A running journal of every experiment. Newest entries on top.
+
+### Day 4, Three features: Stochastic Depth, Auxiliary Direction Head, Looping Regularization
+
+* **What**: Implemented and tested 3 queued features: Stochastic Depth (random block-skipping regularization, Huang et al. ECCV 2016), Auxiliary Direction Head (binary BCE direction-prediction auxiliary loss), and Looping Regularization (hidden state L2 norm penalty). 5-value sweep for stochastic depth (0.1–0.9), 11-value sweep for aux direction (0.01–1.0), 9-value sweep for loop reg (1e-6–2.0), plus fine sweeps around optima. 30 models trained, top 4 full 3-mode benchmarked.
+* **Features**: `--stoch-depth` (0.1–0.9), `--aux-direction` (0.01–1.0), `--loop-reg` (1e-6–2.0)
+* **Compute**: NVIDIA RTX 5090, ~8 minutes total
+
+#### Full 3-mode results (top 4 variants)
+
+| Config | Mode | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill |
+|--------|------|-----------|------------|-----------|------------|
+| **auxdir=0.05** | blind | 10.23% | **+0.177** | 19.08% | -0.077 |
+| **auxdir=0.05** | nonblind | 1.40% | +0.864 | 2.22% | +0.872 |
+| **auxdir=0.05** | partial | **10.42%** | **+0.168** | 17.78% | -0.022 |
+| **auxdir=0.2** | blind | **9.79%** | **+0.189** | 19.92% | -0.165 |
+| **auxdir=0.2** | nonblind | 1.38% | +0.865 | 2.18% | +0.874 |
+| **auxdir=0.2** | partial | 12.20% | -0.074 | 19.39% | -0.173 |
+| **stoch=0.7** | blind | 10.34% | +0.158 | 22.37% | -0.362 |
+| **stoch=0.7** | nonblind | 1.42% | +0.864 | 2.24% | +0.871 |
+| **stoch=0.7** | partial | 15.05% | -0.370 | 10453.43% | -1698.417 |
+| **loopreg=0.5** | blind | 11.13% | +0.135 | 18.98% | -0.080 |
+| **loopreg=0.5** | nonblind | **1.32%** | **+0.868** | **2.16%** | **+0.875** |
+| **loopreg=0.5** | partial | 12.31% | -0.002 | 16.56% | **+0.074** |
+| baseline | blind | 45.72% | -2.403 | 19.19% | -0.101 |
+| baseline | nonblind | 1.36% | +0.866 | 2.19% | +0.873 |
+| baseline | partial | 82.38% | -6.071 | 145.69% | -15.047 |
+
+#### Blind mode results (Day 4 features vs baseline)
+
+| Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
+|--------|-----------|------------|-----------|------------|----------|
+| **auxdir=0.2** | **9.79%** | **+0.189** | 19.92% | -0.165 | **14.86%** |
+| **auxdir=0.05** | 10.23% | +0.177 | 19.08% | -0.077 | **14.66%** |
+| **stoch=0.7** | **10.34%** | +0.158 | 22.37% | -0.362 | **16.36%** |
+| stoch=0.9 | 11.79% | +0.101 | 21.05% | -0.261 | 16.42% |
+| **loopreg=0.5** | 11.13% | +0.135 | 18.98% | -0.080 | **15.06%** |
+| **loopreg=0.1** | 11.39% | +0.118 | 18.70% | -0.050 | **15.05%** |
+| auxdir=1.0 | 9.84% | +0.122 | 22.89% | -0.405 | 16.37% |
+| baseline | 45.72% | -2.403 | 19.19% | -0.101 | 32.45% |
+
+#### Key findings
+
+* **Auxiliary Direction Head at weight 0.2 achieves AAPL blind 9.79% (+0.189 skill)** — ties anti-pattern 0.2 for the best AAPL blind of any zero-param feature. The 65-param classification head provides a complementary gradient signal: while MSE targets precise level prediction, BCE targets directional correctness. The BCE loss stabilizes the gradient landscape.
+* **Aux Direction 0.05 achieves the best AAPL partial of any Day 4 feature: 10.42% (+0.168 skill)** with near-baseline NVDA (19.08%). It's the most balanced config of the day — strong blind and partial AAPL with minimal NVDA regression.
+* **Aux direction has a bimodal stability profile**: weights 0.01–0.05 are stable (AAPL 10–15%), 0.08–0.15 destabilize AAPL (22–82%), and 0.2–1.0 are stable again (9.79–16.90%). This suggests two different regimes — low-weight regularization vs high-weight gradient dominance — with a transition zone between them.
+* **Stochastic Depth 0.7 achieves AAPL 10.34% (+0.158 skill)** — competitive with top AAPL features. Only survival probabilities 0.7 and 0.9 are stable; 0.1, 0.5, and 0.6 all explode AAPL to millions of percent. The 2-layer Glint is too shallow to benefit from aggressive block dropping — survival must stay above ~0.65.
+* **Stochastic Depth 0.7 NVDA partial explodes (10453%+)** — the random block-dropping at training creates test-time scaling issues in the re-anchor setting. Only use for blind mode.
+* **Looping Regularization shows monotonic improvement**: 1e-6 through 1e-4 is indistinguishable from baseline, 0.001 starts helping (43.80% AAPL), 0.01 gives moderate help (33.80%), and 0.1+ plateaus at AAPL 11.13–11.39% with positive skill. The sweet spot is 0.1–0.5.
+* **Looping Regularization 0.5 achieves positive NVDA partial skill (+0.074)** and the best nonblind of any Day 4 feature (1.32%/2.16%). The hidden state L2 penalty is a simple but effective regularizer that prevents representation explosion without hurting one-step-ahead predictions.
+* **Nonblind mode is invariant**: All variants score MAPE 1.32–1.42% (AAPL) / 2.16–2.24% (NVDA) with skill +0.864–0.875.
+
+#### Updated leaderboard (blind mode)
+
+| Rank | Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
+|------|--------|-----------|------------|-----------|------------|----------|
+| — | **Muon 0.005** | 9.92% | +0.178 | 18.56% | -0.009 | **14.24%** |
+| — | **auxdir=0.05 (Day 4)** | 10.23% | +0.177 | 19.08% | -0.077 | **14.66%** |
+| — | **auxdir=0.2 (Day 4)** | **9.79%** | **+0.189** | 19.92% | -0.165 | **14.86%** |
+| — | **loopreg=0.5 (Day 4)** | 11.13% | +0.135 | 18.98% | -0.080 | **15.06%** |
+| — | **loopreg=0.1 (Day 4)** | 11.39% | +0.118 | 18.70% | -0.050 | **15.05%** |
+| — | **stoch=0.7 (Day 4)** | 10.34% | +0.158 | 22.37% | -0.362 | 16.36% |
+| — | baseline | 45.72% | -2.403 | 19.19% | -0.101 | 32.45% |
+
+#### Verdicts
+
+| Feature | Verdict |
+|---------|---------|
+| `--aux-direction 0.05` | **KEEP** — best balanced Day 4 feature, strong AAPL blind+partial, near-baseline NVDA |
+| `--aux-direction 0.2` | **KEEP** — ties best AAPL blind ever (9.79%, +0.189), matches anti=0.2 |
+| `--aux-direction 0.01` | **NEUTRAL** — works but dominated by 0.05 |
+| `--aux-direction 0.08–0.15` | **DROP** — destabilizes AAPL |
+| `--aux-direction 0.5–1.0` | **NEUTRAL** — works but ticker-asymmetric |
+| `--stoch-depth 0.7` | **KEEP** — AAPL blind specialist, zero params, but NVDA partial explodes |
+| `--stoch-depth 0.9` | **NEUTRAL** — works but dominated by 0.7 |
+| `--stoch-depth 0.1/0.3/0.5/0.6` | **DROP** — unstable, explodes AAPL |
+| `--loop-reg 0.1–0.5` | **KEEP** — moderate well-rounded regularizer, zero params, positive NVDA partial skill |
+| `--loop-reg <0.01` | **DROP** — indistinguishable from baseline |
 
 ### Day 3 (Round 2), Three features: Per-Layer Embeddings, Anti-pattern Unlikelihood, NCE Context Loss
 

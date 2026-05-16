@@ -456,6 +456,18 @@ python train.py --latent-steps 2 --think-depth-weight 1.0
 python train.py --gadw --anti-pattern-weight 0.2
 python train.py --latent-steps 2 --think-depth-weight 0.1 --anti-pattern-weight 0.2
 
+# Day 4 — Stochastic Depth (AAPL specialist)
+python train.py --stoch-depth 0.7
+
+# Day 4 — Auxiliary Direction Head (ties best AAPL blind ever)
+python train.py --aux-direction 0.2
+
+# Day 4 — Auxiliary Direction Head (best balanced, positive partial skill)
+python train.py --aux-direction 0.05
+
+# Day 4 — Looping Regularization (moderate well-rounded regularizer)
+python train.py --loop-reg 0.5
+
 # Benchmark all modes
 python benchmark.py --model runs/.../model.pt --mode blind --no-plot
 python benchmark.py --model runs/.../model.pt --mode nonblind --no-plot

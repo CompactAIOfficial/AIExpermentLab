@@ -41,6 +41,7 @@ def train_model(
     nce_weight: float = 0.0,
     engram: bool = False, sleep_gate: bool = False, trim_kv: bool = False,
     gadw: bool = False, recurrent_depth: int = 0, think_depth_weight: float = 0.0,
+    stoch_depth: float = 0.0, aux_direction: float = 0.0, loop_reg: float = 0.0,
 ):
     os.makedirs(run_dir, exist_ok=True)
     set_seed(train_cfg.seed)
@@ -92,6 +93,14 @@ def train_model(
 
     if trim_kv:
         model_cfg.trim_kv = True
+
+    if stoch_depth > 0:
+        from .experiments.stochastic_depth import apply_stochastic_depth
+        model = apply_stochastic_depth(model, stoch_depth)
+
+    if aux_direction > 0:
+        from .experiments.aux_direction import add_direction_head
+        model = add_direction_head(model, aux_direction, device)
 
     from .experiments.input_dropout import apply_input_dropout
     from .experiments.output_reg import output_regularization
@@ -222,6 +231,18 @@ def train_model(
                 loss_parts.append(nce_l)
                 loss = loss + nce_l
 
+            if aux_direction > 0 and hasattr(model, '_last_hidden') and model._last_hidden is not None:
+                from .experiments.aux_direction import direction_aux_loss
+                dir_loss = direction_aux_loss(model, yb, aux_direction)
+                loss_parts.append(dir_loss)
+                loss = loss + dir_loss
+
+            if loop_reg > 0 and hasattr(model, '_last_hidden') and model._last_hidden is not None:
+                from .experiments.loop_reg import loop_regularization
+                lr_loss = loop_regularization(model, loop_reg)
+                loss_parts.append(lr_loss)
+                loss = loss + lr_loss
+
             if gadw_mod is not None and len(loss_parts) > 1:
                 loss = gadw_mod(loss_parts)
 
@@ -283,6 +304,7 @@ def train_model(
             save_state = model.state_dict()
             if ema is not None:
                 save_state = ema.state_dict()
+            save_state = {k: v for k, v in save_state.items() if not k.startswith("dir_head.")}
             torch.save({"model": save_state, "cfg": model_cfg.__dict__}, os.path.join(run_dir, "model.pt"))
         else:
             stalled += 1

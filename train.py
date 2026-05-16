@@ -103,6 +103,14 @@ def parse_args():
                    help="Number of recurrent core iterations for Recurrent-Depth Transformer (0=disabled). Mythos-style Prelude→Core→Coda.")
     p.add_argument("--think-depth-weight", type=float, default=0.0,
                    help="Weight for think depth loss on latent reasoning steps (0=disabled). Penalizes lazy COCONUT steps with high cosine similarity.")
+
+    # Day 4 experiment flags
+    p.add_argument("--stoch-depth", type=float, default=0.0,
+                   help="Survival probability for stochastic depth (0=disabled, 1=always active). Randomly drops entire blocks during training.")
+    p.add_argument("--aux-direction", type=float, default=0.0,
+                   help="Weight for auxiliary direction classification loss (0=disabled). Binary BCE on up/down price direction.")
+    p.add_argument("--loop-reg", type=float, default=0.0,
+                   help="L2 penalty weight on hidden state norm during loop operations (0=disabled). Prevents hidden state collapse/explosion.")
     return p.parse_args()
 
 
@@ -212,6 +220,12 @@ def main():
         flags.append(f"rdepth={args.recurrent_depth}")
     if args.think_depth_weight > 0:
         flags.append(f"thinkd={args.think_depth_weight}")
+    if args.stoch_depth > 0:
+        flags.append(f"stoch={args.stoch_depth}")
+    if args.aux_direction > 0:
+        flags.append(f"auxdir={args.aux_direction}")
+    if args.loop_reg > 0:
+        flags.append(f"loopreg={args.loop_reg}")
     suffix = "_" + "_".join(flags) if flags else ""
     out = out + suffix
 
@@ -253,6 +267,9 @@ def main():
         gadw=args.gadw,
         recurrent_depth=args.recurrent_depth,
         think_depth_weight=args.think_depth_weight,
+        stoch_depth=args.stoch_depth,
+        aux_direction=args.aux_direction,
+        loop_reg=args.loop_reg,
     )
     plot_loss_curve(history, os.path.join(out, "loss_curve.png"))
 
