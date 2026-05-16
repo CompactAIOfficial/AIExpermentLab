@@ -657,6 +657,11 @@ These combinations were tested and performed strictly worse than either feature 
 | GADW alone (no secondary loss) | Without a second loss term, GADW is a no-op. Same as baseline. Only useful with --anti-pattern-weight or other auxiliary losses. |
 | think depth 1.0 + anti=0.2 | NVDA blind 21.17% (-0.269) — worse than think depth alone (21.43%) and anti alone (20.44%). The two constraints conflict: one penalises state divergence, the other penalises confident wrong-direction predictions. |
 | GADW + anti=0.2 + rdepth=4 | Tradeoff config: AAPL 9.90% (+0.168 best) but NVDA degrades to 21.78% (-0.314). GADW+anti=0.2 without rdepth is more balanced (18.31% NVDA). |
+| auxdir=0.05 + anti=0.2 | AAPL 22.80% (-0.699) — both target direction. BCE auxiliary loss + direction penalty create conflicting gradients. Same-family features don't stack. |
+| auxdir=0.2 + anti=0.2 | AAPL 31.97% (-1.303) — two strongest AAPL-blind features overload the 82K-param model. Gradient landscape becomes too complex. |
+| auxdir=0.2 + loopreg=0.1 | AAPL 9.81% — identical to auxdir=0.2 alone (9.79%). loopreg 0.1 is too mild to affect the already-dominant auxdir gradient. |
+| stoch=0.7 + loopreg=0.5 | Neither improves. stoch=0.7 blind is 10.08% (vs 10.34% alone — slightly worse). L2 penalty doesn't stabilize the random block-dropping noise. |
+| anti=0.2 + loopreg=0.5 | AAPL 10.44% vs anti alone 9.83% — worse. The L2 penalty and the confident-wrong penalty interact destructively. |
 
 ### `--stoch-depth 0.7`
 
@@ -767,6 +772,7 @@ Each feature has a mode where it excels:
 | Best AAPL blind (Day 4, zero params) | `--aux-direction 0.2` | AAPL blind **9.79%**, **+0.189** skill |
 | Best balanced Day 4 feature | `--aux-direction 0.05` | AAPL blind 10.23% +0.177, AAPL partial **10.42% +0.168** skill |
 | Best moderate regularizer (zero params) | `--loop-reg 0.5` | AAPL blind 11.13% +0.135, NVDA partial **+0.074** skill |
+| Best NVDA blind ever | `--aux-direction 0.05 + --loop-reg 0.5` | NVDA blind **13.75%, +0.325 skill**. Ticker-asymmetric: hurts AAPL |
 | Best AAPL blind (stochastic, zero params) | `--stoch-depth 0.7` | AAPL blind 10.34% +0.158 |
 
 ```bash
@@ -880,6 +886,31 @@ A running journal of every experiment. Newest entries on top.
 * **Looping Regularization 0.5 achieves positive NVDA partial skill (+0.074)** and the best nonblind of any Day 4 feature (1.32%/2.16%). The hidden state L2 penalty is a simple but effective regularizer that prevents representation explosion without hurting one-step-ahead predictions.
 * **Nonblind mode is invariant**: All variants score MAPE 1.32–1.42% (AAPL) / 2.16–2.24% (NVDA) with skill +0.864–0.875.
 
+#### Phase 7: Combining winners
+
+After individual testing, combined Day 4 features with each other and with anti-pattern 0.2 (best pre-Day4 feature). 6 combinations trained and blind-benchmarked; the one that beat both individuals got full 3-mode.
+
+| Combo | AAPL blind | Skill | NVDA blind | Skill | Avg MAPE | Verdict |
+|-------|-----------|-------|-----------|-------|----------|---------|
+| auxdir=0.05 + anti=0.2 | 22.80% | -0.699 | 18.62% | -0.039 | 20.71% | Conflict — both target direction |
+| auxdir=0.2 + anti=0.2 | 31.97% | -1.303 | 20.37% | -0.205 | 26.17% | Overloaded — two strong AAPL blind |
+| auxdir=0.2 + loopreg=0.1 | 9.81% | +0.189 | 19.91% | -0.165 | 14.86% | Neutral — same as auxdir=0.2 alone |
+| **auxdir=0.05 + loopreg=0.5** | 24.42% | -0.790 | **13.75%** | **+0.325** | 19.09% | **Stacks for NVDA** |
+| stoch=0.7 + loopreg=0.5 | 10.08% | +0.134 | 23.82% | -0.475 | 16.95% | Doesn't stack |
+| anti=0.2 + loopreg=0.5 | 10.44% | +0.116 | 22.25% | -0.331 | 16.35% | Doesn't stack |
+
+Full 3-mode for `auxdir=0.05 + loopreg=0.5` (the only combo that beat its individuals):
+
+| Mode | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill |
+|------|-----------|------------|-----------|------------|
+| blind | 24.42% | -0.790 | **13.75%** | **+0.325** |
+| nonblind | 1.34% | +0.867 | 2.20% | +0.873 |
+| partial | 21.95% | -0.687 | 18.02% | +0.147 |
+
+**Key combo finding**: `auxdir=0.05 + loopreg=0.5` creates an NVDA specialist — NVDA blind **13.75% (+0.325 skill)**, best ever. The L2 hidden state penalty (loopreg) interacts with the direction BCE (auxdir) to produce a synergistic NVDA regularization that neither achieves alone. But AAPL degrades (24.42%). Ticker-asymmetric synergy.
+
+**5 out of 6 combos don't stack.** The two strongest AAPL-blind features (auxdir=0.2 and anti=0.2) overload the 82K-param model when combined. The more similar the mechanism, the worse the combo — direction penalties + direction BCE create gradient conflicts.
+
 #### Updated leaderboard (blind mode)
 
 | Rank | Config | AAPL MAPE | AAPL Skill | NVDA MAPE | NVDA Skill | Avg MAPE |
@@ -889,6 +920,7 @@ A running journal of every experiment. Newest entries on top.
 | — | **auxdir=0.2 (Day 4)** | **9.79%** | **+0.189** | 19.92% | -0.165 | **14.86%** |
 | — | **loopreg=0.5 (Day 4)** | 11.13% | +0.135 | 18.98% | -0.080 | **15.06%** |
 | — | **loopreg=0.1 (Day 4)** | 11.39% | +0.118 | 18.70% | -0.050 | **15.05%** |
+| — | **auxdir=0.05 + loopreg=0.5 (Day 4 combo)** | 24.42% | -0.790 | **13.75%** | **+0.325** | 19.09% |
 | — | **stoch=0.7 (Day 4)** | 10.34% | +0.158 | 22.37% | -0.362 | 16.36% |
 | — | baseline | 45.72% | -2.403 | 19.19% | -0.101 | 32.45% |
 
